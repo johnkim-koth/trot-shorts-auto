@@ -1,0 +1,33 @@
+name: Trot Shorts Auto Generator
+
+on:
+  schedule:
+    # 한국 시간(KST) 기준 매일 08:45 (UTC 23:45), 18:45 (UTC 09:45)
+    - cron: '45 23 * * *'
+    - cron: '45 9 * * *'
+  workflow_dispatch:
+
+jobs:
+  render-shorts:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 저장소 코드 불러오기
+        uses: actions/checkout@v4
+
+      - name: 파이썬 3.11 환경 구성
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 한글 폰트 및 영상 렌더링 라이브러리 설치
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq fonts-nanum
+          python -m pip install --upgrade pip
+          pip install edge-tts nest_asyncio moviepy==1.0.3 pillow requests beautifulsoup4 gspread google-api-python-client google-auth
+
+      - name: 무인 쇼츠 생성 및 시트/드라이브 연동 실행
+        env:
+          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+        run: python generate_shorts.py
