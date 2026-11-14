@@ -7,6 +7,9 @@ on:
     - cron: '45 9 * * *'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   render-shorts:
     runs-on: ubuntu-latest
@@ -25,9 +28,10 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq fonts-nanum
           python -m pip install --upgrade pip
-          pip install edge-tts nest_asyncio moviepy==1.0.3 pillow requests beautifulsoup4 gspread google-api-python-client google-auth
+          pip install edge-tts moviepy==1.0.3 pillow requests beautifulsoup4 gspread google-auth
 
-      - name: 무인 쇼츠 생성 및 시트/드라이브 연동 실행
+      - name: 무인 쇼츠 생성 및 시트/저장소 연동 실행
         env:
           GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python generate_shorts.py
