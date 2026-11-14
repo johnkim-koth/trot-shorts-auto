@@ -13,9 +13,12 @@ import edge_tts
 from moviepy.editor import ImageClip, AudioFileClip
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
-# 1. 서비스 계정 무인 인증 (Google Sheets 전용)
+# 1. 서비스 계정 무인 인증 (시트 이름 검색을 위해 drive + spreadsheets 스코프 필수 포함)
 sa_info = json.loads(os.environ["GCP_SA_KEY"])
-scopes = ["https://www.googleapis.com/auth/spreadsheets"]
+scopes = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive"
+]
 creds = Credentials.from_service_account_info(sa_info, scopes=scopes)
 gc = gspread.authorize(creds)
 
@@ -126,10 +129,10 @@ def upload_to_github_release(file_path, file_name, tag_name="shorts-media"):
     repo = os.environ["GITHUB_REPOSITORY"]
     headers = {
         "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.github+json"
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28"
     }
 
-    # 1) 릴리즈 태그 조회 또는 생성
     rel_url = f"https://api.github.com/repos/{repo}/releases/tags/{tag_name}"
     res = requests.get(rel_url, headers=headers)
     if res.status_code == 200:
@@ -138,19 +141,23 @@ def upload_to_github_release(file_path, file_name, tag_name="shorts-media"):
         create_res = requests.post(
             f"https://api.github.com/repos/{repo}/releases",
             headers=headers,
-            json={"tag_name": tag_name, "name": "Generated Shorts Media", "draft": False, "prerelease": False}
+            json={
+                "tag_name": tag_name,
+                "target_commitish": "main",
+                "name": "Generated Shorts Media",
+                "draft": False,
+                "prerelease": False
+            }
         )
         create_res.raise_for_status()
         release_data = create_res.json()
 
     upload_url = release_data["upload_url"].split("{")[0]
 
-    # 동일 파일명이 이미 있으면 삭제 후 재업로드
     for asset in release_data.get("assets", []):
         if asset["name"] == file_name:
             requests.delete(asset["url"], headers=headers)
 
-    # 2) MP4 바이너리 업로드
     with open(file_path, "rb") as f:
         upload_headers = {
             "Authorization": f"Bearer {token}",
@@ -194,7 +201,6 @@ def run_pipeline():
         shorts_id = rows[idx][15].strip() if len(rows[idx]) > 15 else ""
         content_html = rows[idx][6] if len(rows[idx]) > 6 else ""
 
-        # Published 상태이거나 직전 테스트에서 에러가 난 행 재시도
         if status in ("Published", "Shorts_Render_Error") and not shorts_id:
             processed = True
             print(f"🎯 [대상 포착] {row_num}행: {singer} - {song} (ID: {new_id})")
