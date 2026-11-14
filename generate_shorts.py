@@ -9,24 +9,17 @@ from bs4 import BeautifulSoup
 from io import BytesIO
 import gspread
 from google.oauth2.service_account import Credentials
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
 import edge_tts
 from moviepy.editor import ImageClip, AudioFileClip
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
-# 1. 서비스 계정 무인 인증 (GitHub Secrets에서 로드)
+# 1. 서비스 계정 무인 인증 (Google Sheets 전용)
 sa_info = json.loads(os.environ["GCP_SA_KEY"])
-scopes = [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive"
-]
+scopes = ["https://www.googleapis.com/auth/spreadsheets"]
 creds = Credentials.from_service_account_info(sa_info, scopes=scopes)
 gc = gspread.authorize(creds)
-drive_service = build('drive', 'v3', credentials=creds)
 
 SPREADSHEET_NAME = "Copy of 블로그 자동화 관리 시트"
-DRIVE_FOLDER_ID = "159fqlYANoDYawtHWTEsSjuCcRXXuuk-_"
 sheet = gc.open(SPREADSHEET_NAME).worksheet("최신곡")
 
 # 2. 멜론 실제 고화질 공식 앨범 자켓 크롤러
@@ -87,12 +80,10 @@ def create_optimized_shorts(singer, song, album_url, output_path="shorts.mp4"):
 
     jacket_img = jacket_img.resize((720, 720), Image.Resampling.LANCZOS)
 
-    # 1080x1920 블러 배경 생성
     bg_img = jacket_img.resize((1080, 1920), Image.Resampling.BICUBIC).filter(ImageFilter.GaussianBlur(radius=45))
     overlay = Image.new("RGBA", (1080, 1920), (0, 0, 0, 135))
     bg_img = Image.alpha_composite(bg_img.convert("RGBA"), overlay).convert("RGB")
 
-    # 중앙 정사각형 자켓 합성
     border = Image.new("RGB", (728, 728), (255, 255, 255))
     border.paste(jacket_img, (4, 4))
     bg_img.paste(border, (176, 480))
@@ -104,7 +95,6 @@ def create_optimized_shorts(singer, song, album_url, output_path="shorts.mp4"):
 
     draw.text((540, 210), "[ 신곡 발매 안내 ]", font=f_sub, fill=(255, 215, 0), anchor="mm")
 
-    # 긴 곡 제목 자동 줄바꿈 처리 (최대 2줄)
     wrapped_song = textwrap.wrap(song, width=14)[:2]
     for i, line in enumerate(wrapped_song):
         y_pos = 300 + (i * 72) if len(wrapped_song) > 1 else 330
@@ -112,7 +102,6 @@ def create_optimized_shorts(singer, song, album_url, output_path="shorts.mp4"):
 
     draw.text((540, 1270), f"가수: {singer}", font=f_bold, fill=(255, 255, 255), anchor="mm")
 
-    # 5060 직관적 빨간색 지시 배너
     draw.rectangle([(80, 1560), (1000, 1710)], fill=(215, 38, 56))
     draw.text((540, 1610), "📌 전체 노래 & 가사 전문 감상실", font=f_guide, fill=(255, 255, 255), anchor="mm")
     draw.text((540, 1665), "👈 왼쪽 아래 [동그란 사진] 누르면 바로 연결!", font=f_sub, fill=(255, 235, 59), anchor="mm")
@@ -131,27 +120,49 @@ def create_optimized_shorts(singer, song, album_url, output_path="shorts.mp4"):
     if os.path.exists(frame_path): os.remove(frame_path)
     return output_path
 
-# 5. 지정된 구글 드라이브 폴더에 업로드 & 읽기 권한 부여
-def upload_drive(file_path, file_name):
-    meta = {
-        'name': file_name,
-        'parents': [DRIVE_FOLDER_ID]
+# 5. GitHub Releases 무제한 저장소에 MP4 업로드 & 다운로드 URL 반환
+def upload_to_github_release(file_path, file_name, tag_name="shorts-media"):
+    token = os.environ["GITHUB_TOKEN"]
+    repo = os.environ["GITHUB_REPOSITORY"]
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json"
     }
-    media = MediaFileUpload(file_path, mimetype='video/mp4', resumable=True)
-    f = drive_service.files().create(
-        body=meta,
-        media_body=media,
-        fields='id',
-        supportsAllDrives=True
-    ).execute()
-    file_id = f.get('id')
-    
-    drive_service.permissions().create(
-        fileId=file_id,
-        body={'type': 'anyone', 'role': 'reader'},
-        supportsAllDrives=True
-    ).execute()
-    return file_id
+
+    # 1) 릴리즈 태그 조회 또는 생성
+    rel_url = f"https://api.github.com/repos/{repo}/releases/tags/{tag_name}"
+    res = requests.get(rel_url, headers=headers)
+    if res.status_code == 200:
+        release_data = res.json()
+    else:
+        create_res = requests.post(
+            f"https://api.github.com/repos/{repo}/releases",
+            headers=headers,
+            json={"tag_name": tag_name, "name": "Generated Shorts Media", "draft": False, "prerelease": False}
+        )
+        create_res.raise_for_status()
+        release_data = create_res.json()
+
+    upload_url = release_data["upload_url"].split("{")[0]
+
+    # 동일 파일명이 이미 있으면 삭제 후 재업로드
+    for asset in release_data.get("assets", []):
+        if asset["name"] == file_name:
+            requests.delete(asset["url"], headers=headers)
+
+    # 2) MP4 바이너리 업로드
+    with open(file_path, "rb") as f:
+        upload_headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "video/mp4"
+        }
+        up_res = requests.post(
+            f"{upload_url}?name={requests.utils.quote(file_name)}",
+            headers=upload_headers,
+            data=f
+        )
+        up_res.raise_for_status()
+        return up_res.json()["browser_download_url"]
 
 # 6. 메인 실행 로직
 def run_pipeline():
@@ -183,7 +194,8 @@ def run_pipeline():
         shorts_id = rows[idx][15].strip() if len(rows[idx]) > 15 else ""
         content_html = rows[idx][6] if len(rows[idx]) > 6 else ""
 
-        if status == "Published" and not shorts_id:
+        # Published 상태이거나 직전 테스트에서 에러가 난 행 재시도
+        if status in ("Published", "Shorts_Render_Error") and not shorts_id:
             processed = True
             print(f"🎯 [대상 포착] {row_num}행: {singer} - {song} (ID: {new_id})")
 
@@ -198,13 +210,14 @@ def run_pipeline():
 
             try:
                 rendered = create_optimized_shorts(singer, song, jacket_url, video_filename)
-                drive_id = upload_drive(rendered, video_filename)
+                media_url = upload_to_github_release(rendered, video_filename)
 
                 sheet.update_cell(row_num, 2, new_id)
-                sheet.update_cell(row_num, 16, drive_id)
+                sheet.update_cell(row_num, 16, media_url)
                 sheet.update_cell(row_num, 8, "Shorts_Ready")
 
                 print(f"🎉 [성공] {row_num}행: ID [{new_id}] 부여 및 'Shorts_Ready' 확정 완료!")
+                print(f"   ▶ 저장된 영상 주소: {media_url}")
                 if os.path.exists(rendered): os.remove(rendered)
                 break
 
