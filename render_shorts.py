@@ -260,7 +260,7 @@ def create_optimized_shorts(singer, song, album_url, output_path="shorts.mp4"):
 
 # ================= [LOCKED: 구글 드라이브 업로드 및 파이프라인 제어] =================
 def upload_drive(file_path, file_name):
-    meta = {"name": file_name, "parents": ["root"]}
+    meta = {"name": file_name, "parents": ["1ykCDgxjjxgBvK3ZTPhTOytdsNhhUX1Bh"]}
     media = MediaFileUpload(file_path, mimetype="video/mp4", resumable=True)
     f = drive_service.files().create(body=meta, media_body=media, fields="id").execute()
     file_id = f.get("id")
