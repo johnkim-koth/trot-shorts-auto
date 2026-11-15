@@ -56,7 +56,10 @@ def safe_fadeout(clip, fade_dur):
         return clip.with_effects([AudioFadeOut(fade_dur)])
     return clip.fx(audio_fadeout, fade_dur)
 
-SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets.readonly",
+    "https://www.googleapis.com/auth/drive.readonly"
+]
 sa_info = json.loads(os.environ["GCP_SA_KEY"])
 creds = Credentials.from_service_account_info(sa_info, scopes=SCOPES)
 gc = gspread.authorize(creds)
