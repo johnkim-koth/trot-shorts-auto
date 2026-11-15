@@ -1,17 +1,14 @@
-name: Trot Shorts Auto Generator
+name: YouTube Shorts Auto Publisher
 
 on:
   schedule:
-    # 한국 시간(KST) 기준 매일 08:45 (UTC 23:45), 18:45 (UTC 09:45)
-    - cron: '45 23 * * *'
-    - cron: '45 9 * * *'
+    # 한국 시간 기준 매일 09:00 (UTC 00:00), 19:00 (UTC 10:00) -> 블로그 발행 30분 후 실행
+    - cron: '0 0 * * *'
+    - cron: '0 10 * * *'
   workflow_dispatch:
 
-permissions:
-  contents: write
-
 jobs:
-  render-shorts:
+  publish-shorts:
     runs-on: ubuntu-latest
 
     steps:
@@ -23,15 +20,16 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: 한글 폰트 및 영상 렌더링 라이브러리 설치
+      - name: 한글 폰트 및 쇼츠 렌더링 라이브러리 설치
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq fonts-nanum
+          sudo apt-get update && sudo apt-get install -y fonts-nanum ffmpeg
           python -m pip install --upgrade pip
-          pip install edge-tts moviepy==1.0.3 pillow requests beautifulsoup4 gspread google-auth
+          pip install requests pillow numpy gtts moviepy google-api-python-client google-auth-httplib2 google-auth-oauthlib
 
-      - name: 무인 쇼츠 생성 및 시트/저장소 연동 실행
+      - name: 유튜브 쇼츠 자동 생성 및 업로드 실행
         env:
-          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GOOGLE_WEBHOOK_URL: ${{ secrets.GOOGLE_WEBHOOK_URL }}
+          YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
+          YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
+          YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
         run: python generate_shorts.py
