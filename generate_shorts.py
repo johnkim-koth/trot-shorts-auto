@@ -3,8 +3,8 @@
 =============================================================================
 [유튜브 쇼츠 자동 생성 & 업로드 무결 마스터 코드 - generate_shorts.py]
 1. 시트 격리 락: 티스토리 발행 완료('Published') & 쇼츠 미발행(Q열 공백) 행만 포착
-2. Duration 락: moviepy v1/v2 전 클립(배경/자켓/자막/오디오) duration 강제 고정
-3. TTS & BGM 락: gTTS 감성 후킹 음성 + 멜론 500px 고화질 자켓 모션 렌더링
+2. Audio/Video 동기화 락: AudioFileClip 원본 길이 보존 및 EOF 초과 에러 원천 차단
+3. Duration 락: moviepy v1/v2 전 클립(배경/자켓/자막) duration 강제 고정
 4. 업로드 & 웹훅 락: YouTube Data API v3 쇼츠 자동 업로드 후 시트 P/Q열 자동 기록
 =============================================================================
 """
@@ -17,16 +17,15 @@ import time
 import json
 import urllib.parse
 import requests
-import numpy as np
 from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageOps
 from gtts import gTTS
 
 # moviepy v1 / v2 완벽 호환 임포트
 try:
-    from moviepy import ImageClip, AudioFileClip, CompositeVideoClip
+    from moviepy import ImageClip, AudioFileClip, CompositeVideoClip, CompositeAudioClip
     MOVIEPY_V2 = True
 except ImportError:
-    from moviepy.editor import ImageClip, AudioFileClip, CompositeVideoClip
+    from moviepy.editor import ImageClip, AudioFileClip, CompositeVideoClip, CompositeAudioClip
     MOVIEPY_V2 = False
 
 from google.oauth2.credentials import Credentials
@@ -34,7 +33,7 @@ from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
-# 1. 기본 환경 설정 (블로그 파이프라인과 완전 격리)
+# 1. 기본 환경 설정 (블로그 파이프라인과 완전 격리 LOCKED)
 CONFIG = {
     "SHEET_CSV_URL": "https://docs.google.com/spreadsheets/d/1vF2VhijXr8Yu50E104DOi8GhhmKEmKefkeV7_uHixwk/export?format=csv&gid=0",
     "WEBHOOK_URL": os.environ.get("GOOGLE_WEBHOOK_URL", "https://script.google.com/macros/s/AKfycbwE_RYrGAlULk2rfju5aSbdBcotjzBV-Kgr4WWVuGL5TWLVCkccX6Caz7Txu1QjSvDGpQ/exec"),
@@ -61,24 +60,18 @@ def set_clip_audio(clip, audio_clip):
         return clip.with_audio(audio_clip)
     return clip.set_audio(audio_clip)
 
-def set_clip_position(clip, pos):
-    if hasattr(clip, "with_position"):
-        return clip.with_position(pos)
-    return clip.set_position(pos)
+def clip_subclip(clip, start_t, end_t):
+    if hasattr(clip, "subclipped"):
+        return clip.subclipped(start_t, end_t)
+    return clip.subclip(start_t, end_t)
 
-def set_clip_start(clip, start_t):
-    if hasattr(clip, "with_start"):
-        return clip.with_start(float(start_t))
-    return clip.set_start(float(start_t))
-
-# 2. 시트에서 쇼츠 제작 대상 탐색 (블로그 'Published' 완료 + 쇼츠 Q열 미등록 행만 포착)
+# 2. 시트에서 쇼츠 제작 대상 탐색 (블로그 'Published' 완료 + 쇼츠 Q열 미등록 행만 포착 LOCKED)
 def fetch_shorts_target_from_sheet():
     print("[시작] '최신곡' 시트에서 쇼츠 제작 대상을 탐색합니다...")
     res = requests.get(f"{CONFIG['SHEET_CSV_URL']}&_t={int(time.time())}", timeout=15)
     res.encoding = 'utf-8'
     rows = list(csv.reader(io.StringIO(res.text)))
 
-    # 열 구조: A(0)=ID, C(2)=가수, D(3)=제목, E(4)=Melon Link, G(6)=Draft/Content, H(7)=Status, P(15)=Shorts File ID, Q(16)=Shorts Link
     for idx in range(4, len(rows)):
         row = rows[idx]
         if len(row) <= 7:
@@ -95,7 +88,6 @@ def fetch_shorts_target_from_sheet():
         if not artist or not title or artist.startswith("http"):
             continue
 
-        # 티스토리 발행 완료('Published') 상태이면서 쇼츠 링크가 아직 없는 곡만 선택 (블로그 작업과 충돌 제로)
         if status.lower() == "published" and not shorts_link.startswith("http"):
             return {
                 "row_idx": idx + 1,
@@ -107,7 +99,7 @@ def fetch_shorts_target_from_sheet():
             }
     return None
 
-# 3. 멜론 500px 고화질 자켓 이미지 확보
+# 3. 멜론 500px 고화질 자켓 이미지 확보 (LOCKED)
 def download_melon_jacket(artist, title, melon_url):
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     album_id = ""
@@ -141,7 +133,6 @@ def download_melon_jacket(artist, title, melon_url):
         except Exception:
             pass
 
-    # 폴백 기본 캔버스 생성
     img = Image.new("RGB", (600, 600), (30, 41, 59))
     img.save(jacket_path, "JPEG")
     return jacket_path
@@ -161,7 +152,7 @@ def load_korean_font(size):
                 pass
     return ImageFont.load_default()
 
-# 4. MP4 모션 비디오 렌더링 (모든 레이어 duration 명시 고정)
+# 4. MP4 모션 비디오 렌더링 (AudioFileClip 원본 길이 보존 + EOF 초과 원천 차단)
 def render_shorts_video(target):
     artist = target["artist"]
     title = target["title"]
@@ -176,37 +167,36 @@ def render_shorts_video(target):
     tts = gTTS(text=narration, lang="ko")
     tts.save(tts_path)
 
-    audio_clip = AudioFileClip(tts_path)
-    total_duration = round(max(float(audio_clip.duration) + 0.8, 12.0), 2)
-    audio_clip = set_clip_duration(audio_clip, total_duration)
+    raw_audio = AudioFileClip(tts_path)
+    raw_audio_dur = float(raw_audio.duration)
+    # MP3 마지막 프레임(EOF) 초과 읽기를 막기 위해 0.08초 안쪽으로 안전 트리밍
+    safe_duration = round(max(raw_audio_dur - 0.08, 3.0), 2)
+    safe_audio = clip_subclip(raw_audio, 0, safe_duration)
+    composed_audio = CompositeAudioClip([safe_audio])
+    composed_audio = set_clip_duration(composed_audio, safe_duration)
 
     print("    [2/3] 공식 앨범 자켓 및 세로형(1080x1920) 프레임 구성 중...")
     jacket_path = download_melon_jacket(artist, title, target.get("melon_url", ""))
     raw_jacket = Image.open(jacket_path).convert("RGB")
 
-    # 1) 배경 블러 이미지 생성
     bg_img = ImageOps.fit(raw_jacket, (CONFIG["VIDEO_W"], CONFIG["VIDEO_H"]), centering=(0.5, 0.5))
     bg_img = bg_img.filter(ImageFilter.GaussianBlur(radius=28))
     dark_overlay = Image.new("RGBA", (CONFIG["VIDEO_W"], CONFIG["VIDEO_H"]), (10, 15, 28, 175))
     bg_rgba = Image.alpha_composite(bg_img.convert("RGBA"), dark_overlay).convert("RGB")
 
-    # 2) 상단 타이틀 배지 + 중앙 앨범 자켓 카드 + 하단 안내 자막 합성
     draw = ImageDraw.Draw(bg_rgba)
     f_badge = load_korean_font(40)
     f_title = load_korean_font(64)
     f_artist = load_korean_font(52)
     f_sub = load_korean_font(38)
 
-    # 상단 배지
     draw.rounded_rectangle([240, 160, 840, 240], radius=40, fill=(217, 119, 6))
     draw.text((540, 200), "오늘의 추천 트로트 명곡", font=f_badge, fill=(255, 255, 255), anchor="mm")
 
-    # 곡명 & 가수명
-    display_title = title if len(title) <= 16 else title[:15] + "…"
+    display_title = title if len(title) <= 16 else title[:15] + "..."
     draw.text((540, 330), display_title, font=f_title, fill=(255, 255, 255), anchor="mm")
-    draw.text((540, 420), f"🎤 {artist}", font=f_artist, fill=(253, 224, 71), anchor="mm")
+    draw.text((540, 420), f"Artist : {artist}", font=f_artist, fill=(253, 224, 71), anchor="mm")
 
-    # 중앙 앨범 자켓 (680x680)
     card_size = 680
     jacket_card = ImageOps.fit(raw_jacket, (card_size, card_size), centering=(0.5, 0.5))
     card_x = (CONFIG["VIDEO_W"] - card_size) // 2
@@ -214,24 +204,22 @@ def render_shorts_video(target):
     draw.rounded_rectangle([card_x - 10, card_y - 10, card_x + card_size + 10, card_y + card_size + 10], radius=28, fill=(255, 255, 255))
     bg_rgba.paste(jacket_card, (card_x, card_y))
 
-    # 하단 가사/풀버전 유도 배너
     draw.rounded_rectangle([120, 1300, 960, 1480], radius=24, fill=(30, 41, 59))
-    draw.text((540, 1360), "전체 가사 · 작사/작곡 크레딧 · 풀영상", font=f_sub, fill=(147, 197, 253), anchor="mm")
+    draw.text((540, 1360), "전체 가사 / 작사·작곡 크레딧 / 풀영상", font=f_sub, fill=(147, 197, 253), anchor="mm")
     draw.text((540, 1425), "▼ 설명란 & 댓글 링크에서 바로 듣기 ▼", font=f_sub, fill=(255, 255, 255), anchor="mm")
 
     frame_path = "/tmp/shorts_frame.png"
     bg_rgba.save(frame_path, "PNG")
 
-    print(f"    [3/3] MP4 모션 비디오 렌더링 인코딩 중 ({total_duration}초)...")
+    print(f"    [3/3] MP4 모션 비디오 렌더링 인코딩 중 ({safe_duration}초)...")
     output_mp4 = "/tmp/output_shorts.mp4"
 
-    # 모든 클립에 duration을 명시적으로 설정하여 'Attribute duration not set' 원천 차단
     base_clip = ImageClip(frame_path)
-    base_clip = set_clip_duration(base_clip, total_duration)
+    base_clip = set_clip_duration(base_clip, safe_duration)
 
     final_video = CompositeVideoClip([base_clip], size=(CONFIG["VIDEO_W"], CONFIG["VIDEO_H"]))
-    final_video = set_clip_duration(final_video, total_duration)
-    final_video = set_clip_audio(final_video, audio_clip)
+    final_video = set_clip_duration(final_video, safe_duration)
+    final_video = set_clip_audio(final_video, composed_audio)
 
     final_video.write_videofile(
         output_mp4,
@@ -244,15 +232,15 @@ def render_shorts_video(target):
     )
 
     try:
-        audio_clip.close()
+        raw_audio.close()
         final_video.close()
     except Exception:
         pass
 
-    print(f"-> [렌더링 성공] {output_mp4} 생성 완료 ({total_duration}초)")
+    print(f"-> [렌더링 성공] {output_mp4} 생성 완료 ({safe_duration}초)")
     return output_mp4
 
-# 5. YouTube Data API v3 쇼츠 자동 업로드
+# 5. YouTube Data API v3 쇼츠 자동 업로드 (LOCKED)
 def upload_to_youtube_shorts(mp4_path, target):
     if not all([CONFIG["YT_CLIENT_ID"], CONFIG["YT_CLIENT_SECRET"], CONFIG["YT_REFRESH_TOKEN"]]):
         print("-> [경고] YouTube API 인증 정보(YT_CLIENT_ID/SECRET/REFRESH_TOKEN)가 비어 있습니다.")
@@ -275,9 +263,9 @@ def upload_to_youtube_shorts(mp4_path, target):
 
     yt_title = f"{artist} - {title} 가사 노래듣기 #트로트 #Shorts"[:98]
     yt_desc = (
-        f"🎤 가수 : {artist}\n"
-        f"🎵 곡명 : {title}\n\n"
-        f"▶ {artist} - {title} 전체 가사, 작사/작곡 크레딧 및 전곡 모음 듣기:\n"
+        f"가수 : {artist}\n"
+        f"곡명 : {title}\n\n"
+        f"{artist} - {title} 전체 가사, 작사/작곡 크레딧 및 전곡 모음 듣기:\n"
         f"{tag_url}\n\n"
         f"#{artist} #{title} #트로트 #트로트신곡 #성인가요 #Shorts"
     )
@@ -303,7 +291,7 @@ def upload_to_youtube_shorts(mp4_path, target):
     print(f"-> [유튜브 쇼츠 업로드 성공] {shorts_url}")
     return video_id, shorts_url
 
-# 6. 구글 시트 웹훅 연동 (쇼츠 완료 상태 업데이트)
+# 6. 구글 시트 웹훅 연동 (쇼츠 완료 상태 업데이트 LOCKED)
 def update_shorts_status_via_webhook(target, video_id, shorts_url):
     webhook_url = CONFIG["WEBHOOK_URL"].strip()
     if not webhook_url:
@@ -324,7 +312,7 @@ def update_shorts_status_via_webhook(target, video_id, shorts_url):
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("★ [유튜브 쇼츠 자동 발행 시스템] 무결 마스터 가동")
+    print("[유튜브 쇼츠 자동 발행 시스템] 무결 마스터 가동")
     print("=" * 60)
 
     target = fetch_shorts_target_from_sheet()
@@ -332,12 +320,12 @@ if __name__ == "__main__":
         print("쇼츠 제작 대기(블로그 Published 완료 & 쇼츠 미발행) 곡이 없습니다. 종료합니다.")
         exit(0)
 
-    print(f"🎯 [대상 포착] {target['row_idx']}행: {target['artist']} - {target['title']} (ID: {target['id']})")
+    print(f"-> [대상 포착] {target['row_idx']}행: {target['artist']} - {target['title']} (ID: {target['id']})")
     try:
         mp4_file = render_shorts_video(target)
         vid, s_url = upload_to_youtube_shorts(mp4_file, target)
         if vid:
             update_shorts_status_via_webhook(target, vid, s_url)
     except Exception as e:
-        print(f"❌ 렌더링/업로드 실패: {e}")
+        print(f"-> 렌더링/업로드 실패: {e}")
         exit(1)
