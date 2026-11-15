@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import base64
 import asyncio
 from datetime import datetime, timezone, timedelta
 import requests
@@ -8,13 +9,10 @@ from bs4 import BeautifulSoup
 from io import BytesIO
 import gspread
 from google.oauth2.service_account import Credentials
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
 import edge_tts
 import yt_dlp
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
-# ================= [LOCKED: moviepy v1 / v2 완벽 호환 래퍼] =================
 try:
     from moviepy import ImageClip, AudioFileClip, CompositeAudioClip, concatenate_audioclips
     from moviepy.audio.fx import AudioFadeOut, MultiplyVolume
@@ -58,20 +56,18 @@ def safe_fadeout(clip, fade_dur):
         return clip.with_effects([AudioFadeOut(fade_dur)])
     return clip.fx(audio_fadeout, fade_dur)
 
-# ================= [LOCKED: 서비스 계정 무인 구글 API 인증] =================
-SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive"
-]
+SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
 sa_info = json.loads(os.environ["GCP_SA_KEY"])
 creds = Credentials.from_service_account_info(sa_info, scopes=SCOPES)
 gc = gspread.authorize(creds)
-drive_service = build("drive", "v3", credentials=creds)
+
+WEBHOOK_URL = os.environ.get("APPS_SCRIPT_WEBHOOK", "").strip()
+if not WEBHOOK_URL:
+    raise RuntimeError("APPS_SCRIPT_WEBHOOK 시크릿이 설정되지 않았습니다.")
 
 SPREADSHEET_NAME = "Copy of 블로그 자동화 관리 시트"
 sheet = gc.open(SPREADSHEET_NAME).worksheet("최신곡")
 
-# ================= [LOCKED: 멜론 고화질 앨범 자켓 크롤러] =================
 def get_melon_album_art(melon_song_url):
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
@@ -91,7 +87,6 @@ def get_melon_album_art(melon_song_url):
         print(f"      [안내] 멜론 크롤링 예외: {e}")
     return None
 
-# ================= [LOCKED: Edge-TTS 나레이션 생성기] =================
 async def _async_generate_voice(text, filename="voice.mp3"):
     communicate = edge_tts.Communicate(text, "ko-KR-SunHiNeural", rate="+5%")
     await communicate.save(filename)
@@ -99,7 +94,6 @@ async def _async_generate_voice(text, filename="voice.mp3"):
 def generate_voice_sync(text, filename="voice.mp3"):
     asyncio.run(_async_generate_voice(text, filename))
 
-# ================= [LOCKED: 신곡 하이라이트 음원 추출 엔진] =================
 def fetch_song_highlight_audio(singer, song, out_filename="bgm_raw.m4a"):
     if os.path.exists(out_filename):
         os.remove(out_filename)
@@ -136,7 +130,6 @@ def get_font_safe(size):
                 pass
     return ImageFont.load_default()
 
-# ================= [LOCKED: yuv420p 표준 호환 쇼츠 합성 엔진] =================
 def create_optimized_shorts(singer, song, album_url, output_path="shorts.mp4"):
     print("   [1/4] Edge-TTS AI 아나운서 음성 생성 중...")
     script_text = f"오늘 전해드릴 명품 트로트 신곡은 가수 {singer}의 {song}입니다. 전곡 감상과 가사는 왼쪽 아래 동그란 사진을 누르고 맨 위 링크를 확인하세요."
@@ -258,17 +251,25 @@ def create_optimized_shorts(singer, song, album_url, output_path="shorts.mp4"):
 
     return output_path
 
-# ================= [LOCKED: 구글 드라이브 업로드 및 파이프라인 제어] =================
-def upload_drive(file_path, file_name):
-    meta = {"name": file_name, "parents": ["1ykCDgxjjxgBvK3ZTPhTOytdsNhhUX1Bh"]}
-    media = MediaFileUpload(file_path, mimetype="video/mp4", resumable=True)
-    f = drive_service.files().create(body=meta, media_body=media, fields="id").execute()
-    file_id = f.get("id")
-    drive_service.permissions().create(
-        fileId=file_id,
-        body={"type": "anyone", "role": "reader"}
-    ).execute()
-    return file_id
+def upload_via_apps_script(file_path, file_name, row_num, new_id):
+    with open(file_path, "rb") as f:
+        b64_data = base64.b64encode(f.read()).decode("utf-8")
+
+    payload = {
+        "action": "upload_shorts",
+        "fileName": file_name,
+        "fileBase64": b64_data,
+        "rowNum": row_num,
+        "newId": new_id
+    }
+    resp = requests.post(WEBHOOK_URL, json=payload, timeout=120, allow_redirects=True)
+    if resp.status_code != 200:
+        raise RuntimeError(f"Apps Script HTTP 오류: {resp.status_code} / {resp.text[:200]}")
+
+    result = resp.json()
+    if result.get("status") != "success":
+        raise RuntimeError(f"Apps Script 내부 처리 오류: {result.get('message') or result.get('error')}")
+    return result.get("fileId")
 
 def run_pipeline():
     rows = sheet.get_all_values()
@@ -314,20 +315,16 @@ def run_pipeline():
 
             try:
                 rendered = create_optimized_shorts(singer, song, jacket_url, video_filename)
-                drive_id = upload_drive(rendered, video_filename)
+                print("   [전송] 대표님 Google Drive(Shorts_Auto) 및 시트 동기화 요청 중...")
+                drive_id = upload_via_apps_script(rendered, video_filename, row_num, new_id)
 
-                sheet.update_cell(row_num, 2, new_id)
-                sheet.update_cell(row_num, 16, drive_id)
-                sheet.update_cell(row_num, 8, "Shorts_Ready")
-
-                print(f"\n[성공] {row_num}행: ID [{new_id}] 부여 및 'Shorts_Ready' 확정 완료!")
+                print(f"\n[성공] {row_num}행: ID [{new_id}] / Drive ID [{drive_id}] / 'Shorts_Ready' 확정 완료!")
                 if os.path.exists(rendered):
                     os.remove(rendered)
                 break
 
             except Exception as e:
-                print(f"[렌더링 실패] {str(e)}")
-                sheet.update_cell(row_num, 8, "Shorts_Render_Error")
+                print(f"[전송/렌더링 실패] {str(e)}")
                 break
 
     if not processed:
