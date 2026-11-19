@@ -13,6 +13,7 @@ import edge_tts
 import yt_dlp
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
+# ================= [LOCKED: moviepy v1/v2 호환 래퍼] =================
 try:
     from moviepy import ImageClip, AudioFileClip, CompositeAudioClip, concatenate_audioclips
     from moviepy.audio.fx import AudioFadeOut, MultiplyVolume
@@ -56,6 +57,7 @@ def safe_fadeout(clip, fade_dur):
         return clip.with_effects([AudioFadeOut(fade_dur)])
     return clip.fx(audio_fadeout, fade_dur)
 
+# ================= [LOCKED: 시트/웹훅 인증 및 설정] =================
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets.readonly",
     "https://www.googleapis.com/auth/drive.readonly"
@@ -71,6 +73,7 @@ if not WEBHOOK_URL:
 SPREADSHEET_NAME = "Copy of 블로그 자동화 관리 시트"
 sheet = gc.open(SPREADSHEET_NAME).worksheet("최신곡")
 
+# ================= [LOCKED: 멜론 앨범 자켓 크롤러] =================
 def get_melon_album_art(melon_song_url):
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
@@ -91,7 +94,7 @@ def get_melon_album_art(melon_song_url):
     return None
 
 async def _async_generate_voice(text, filename="voice.mp3"):
-    communicate = edge_tts.Communicate(text, "ko-KR-SunHiNeural", rate="+5%")
+    communicate = edge_tts.Communicate(text, "ko-KR-SunHiNeural", rate="+8%")
     await communicate.save(filename)
 
 def generate_voice_sync(text, filename="voice.mp3"):
@@ -101,14 +104,14 @@ def fetch_song_highlight_audio(singer, song, out_filename="bgm_raw.m4a"):
     if os.path.exists(out_filename):
         os.remove(out_filename)
 
-    query = f"ytsearch1:{singer} {song} 공식 음원 audio"
+    query = f"ytsearch1:{singer} {song} 가사 audio"
     ydl_opts = {
         "format": "bestaudio[ext=m4a]/bestaudio/best",
         "outtmpl": out_filename,
         "quiet": True,
         "no_warnings": True,
         "noplaylist": True,
-        "socket_timeout": 10,
+        "socket_timeout": 12,
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -133,9 +136,11 @@ def get_font_safe(size):
                 pass
     return ImageFont.load_default()
 
+# ================= [UPDATED: 구독 전환 & 하이라이트 극대화 쇼츠 엔진] =================
 def create_optimized_shorts(singer, song, album_url, output_path="shorts.mp4"):
-    print("   [1/4] Edge-TTS AI 아나운서 음성 생성 중...")
-    script_text = f"오늘 전해드릴 명품 트로트 신곡은 가수 {singer}의 {song}입니다. 전곡 감상과 가사는 왼쪽 아래 동그란 사진을 누르고 맨 위 링크를 확인하세요."
+    print("   [1/4] Edge-TTS AI 아나운서 음성 생성 중 (핵심 4.5초 압축)...")
+    # 나레이션을 4.5초 이내로 압축해 가수의 실제 노래 감상 시간을 11초 이상 확보
+    script_text = f"명품 트로트 신곡, 가수 {singer}의 {song}! 매일 신곡 소식을 받으시려면 구독을 눌러주세요."
     audio_path = "voice.mp3"
     generate_voice_sync(script_text, audio_path)
 
@@ -151,7 +156,8 @@ def create_optimized_shorts(singer, song, album_url, output_path="shorts.mp4"):
         try:
             bgm_clip_full = AudioFileClip(bgm_raw_path)
             raw_bgm_dur = float(bgm_clip_full.duration)
-            target_total = max(voice_dur + 8.5, 15.5)
+            # 총 길이를 16초 이상 확보 (나레이션 4.5초 + 원곡 하이라이트 11.5초)
+            target_total = max(voice_dur + 11.5, 16.0)
 
             if raw_bgm_dur > target_total + 45:
                 start_sec = 45.0
@@ -165,7 +171,7 @@ def create_optimized_shorts(singer, song, album_url, output_path="shorts.mp4"):
             duration = round(end_sec - start_sec, 2)
 
             if duration > voice_dur + 1.0:
-                bgm_part1 = safe_volumex(safe_subclip(bgm_sub, 0, voice_dur), 0.20)
+                bgm_part1 = safe_volumex(safe_subclip(bgm_sub, 0, voice_dur), 0.22)
                 bgm_part2 = safe_volumex(safe_subclip(bgm_sub, voice_dur, duration), 1.00)
                 bgm_ducked = concatenate_audioclips([bgm_part1, bgm_part2])
             else:
@@ -174,7 +180,7 @@ def create_optimized_shorts(singer, song, album_url, output_path="shorts.mp4"):
             bgm_ducked = safe_fadeout(bgm_ducked, 1.5)
             final_audio = CompositeAudioClip([bgm_ducked, safe_start(voice_clip, 0)])
             final_audio = safe_duration(final_audio, duration)
-            print(f"      └ 오디오 믹싱 성공! (총 {duration:.1f}초: 나레이션 + 하이라이트 결합)")
+            print(f"      └ 오디오 믹싱 성공! (총 {duration:.1f}초: 멘트 {voice_dur:.1f}초 + 하이라이트 {duration - voice_dur:.1f}초)")
         except Exception as mix_err:
             print(f"      [안내] 오디오 믹싱 예외 발생, 기본 음성으로 안전 전환: {mix_err}")
             duration = voice_dur
@@ -186,7 +192,7 @@ def create_optimized_shorts(singer, song, album_url, output_path="shorts.mp4"):
         final_audio = safe_duration(final_audio, duration)
         print(f"      └ 기본 나레이션 단독 모드 적용 ({duration:.1f}초)")
 
-    print("   [3/4] 공식 앨범 자켓 및 5060 맞춤 화면 구성 중...")
+    print("   [3/4] 공식 앨범 자켓 및 5060 구독 유도 화면 구성 중...")
     jacket_img = None
     if album_url and album_url.startswith("http"):
         try:
@@ -221,12 +227,13 @@ def create_optimized_shorts(singer, song, album_url, output_path="shorts.mp4"):
     draw.text((540, 340), f"{song}", font=f_bold, fill=(255, 255, 255), anchor="mm")
     draw.text((540, 1240), f"가수: {singer}", font=f_bold, fill=(255, 255, 255), anchor="mm")
 
-    draw.rectangle([(80, 1560), (1000, 1710)], fill=(215, 38, 56))
-    draw.text((540, 1610), "[전곡 듣기 & 가사 전문 감상실]", font=f_guide, fill=(255, 255, 255), anchor="mm")
-    draw.text((540, 1665), "◀◀ 왼쪽 아래 [채널 사진] 누르고 상단 링크 클릭!", font=f_guide, fill=(255, 235, 59), anchor="mm")
+    # 상단 구독 유도 + 하단 전곡/가사 링크 안내 병기
+    draw.rectangle([(80, 1545), (1000, 1715)], fill=(215, 38, 56))
+    draw.text((540, 1598), "▶ 매일 트로트 신곡 알림 → 오른쪽 [구독] 꾹!", font=f_guide, fill=(255, 235, 59), anchor="mm")
+    draw.text((540, 1662), "◀◀ 전곡·가사는 왼쪽 아래 [채널 사진] 누르고 상단 링크!", font=f_guide, fill=(255, 255, 255), anchor="mm")
 
     frame_path = "frame.png"
-    bg_img.save(frame_path)
+    bg_img.save(frame_path, "PNG")
 
     print(f"   [4/4] MP4 비디오 렌더링 인코딩 중 ({duration}초, yuv420p 표준 호환)...")
     clip = safe_duration(ImageClip(frame_path), duration)
@@ -254,6 +261,7 @@ def create_optimized_shorts(singer, song, album_url, output_path="shorts.mp4"):
 
     return output_path
 
+# ================= [LOCKED: Apps Script 웹훅 업로드] =================
 def upload_via_apps_script(file_path, file_name, row_num, new_id):
     with open(file_path, "rb") as f:
         b64_data = base64.b64encode(f.read()).decode("utf-8")
@@ -274,6 +282,7 @@ def upload_via_apps_script(file_path, file_name, row_num, new_id):
         raise RuntimeError(f"Apps Script 내부 처리 오류: {result.get('message') or result.get('error')}")
     return result.get("fileId")
 
+# ================= [UPDATED: 중복 곡 방지 필터 추가된 실행 제어] =================
 def run_pipeline():
     rows = sheet.get_all_values()
     print("[시작] '최신곡' 시트에서 작업 대상을 탐색합니다...")
@@ -282,6 +291,8 @@ def run_pipeline():
     prefix = datetime.now(kst).strftime("%m%d")
 
     current_numbers = []
+    already_processed_songs = set()
+
     for r in rows:
         val = str(r[1]).strip() if len(r) > 1 else ""
         if val.startswith(prefix + "-"):
@@ -290,6 +301,13 @@ def run_pipeline():
                 current_numbers.append(num)
             except Exception:
                 pass
+        # 이미 쇼츠 ID가 발급된 (가수, 곡명) 쌍 수집하여 중복 발행 방지
+        s_name = r[2].strip() if len(r) > 2 else ""
+        t_name = r[3].strip() if len(r) > 3 else ""
+        s_id = r[15].strip() if len(r) > 15 else ""
+        if s_name and t_name and s_id:
+            already_processed_songs.add((s_name, t_name))
+
     next_seq = (max(current_numbers) + 1) if current_numbers else 1
     new_id = f"{prefix}-{next_seq}"
 
@@ -304,6 +322,10 @@ def run_pipeline():
         content_html = rows[idx][6] if len(rows[idx]) > 6 else ""
 
         if status == "Published" and not shorts_id:
+            if (singer, song) in already_processed_songs:
+                print(f"[중복 스킵] {row_num}행: {singer} - {song} (이미 발행된 곡)")
+                continue
+
             processed = True
             print(f"\n[대상 포착] {row_num}행: {singer} - {song} (발행 ID: {new_id})")
 
