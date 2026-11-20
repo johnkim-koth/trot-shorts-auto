@@ -82,7 +82,7 @@ if not WEBHOOK_URL:
     raise RuntimeError("APPS_SCRIPT_WEBHOOK 시크릿이 설정되지 않았습니다.")
 
 SPREADSHEET_NAME = "Copy of 블로그 자동화 관리 시트"
-sheet = gc.open(SPREADSHEET_NAME).worksheet("최신곡")
+spreadsheet = gc.open(SPREADSHEET_NAME)
 
 # ================= [VERIFIED: 3중 백업 고화질 앨범 자켓 확보 엔진] =================
 def get_best_album_art(singer, song, melon_song_url, content_html):
@@ -190,10 +190,14 @@ def get_font_safe(size):
                 pass
     return ImageFont.load_default()
 
-# ================= [VERIFIED: 3중 자켓 백업 + 정중앙 Ken Burns 줌인 쇼츠 엔진] =================
-def create_optimized_shorts(singer, song, melon_url, content_html, output_path="shorts.mp4"):
-    print("   [1/4] Edge-TTS AI 아나운서 음성 생성 중 (핵심 4.5초 압축)...")
-    script_text = f"명품 트로트 신곡, 가수 {singer}의 {song}! 매일 신곡 소식을 받으시려면 구독을 눌러주세요."
+# ================= [VERIFIED: 3중 자켓 백업 + Ken Burns 줌인 + 인기곡/최신곡 분기 쇼츠 엔진] =================
+def create_optimized_shorts(singer, song, melon_url, content_html, tab_name="최신곡", output_path="shorts.mp4"):
+    is_popular = (tab_name == "인기곡")
+    badge_text = "시청자 추천 트로트 명곡" if is_popular else "오늘의 명품 트로트 신곡"
+    intro_prefix = "트로트 명곡 추천" if is_popular else "명품 트로트 신곡"
+
+    print(f"   [1/4] Edge-TTS AI 아나운서 음성 생성 중 ({tab_name} 모드)...")
+    script_text = f"{intro_prefix}, 가수 {singer}의 {song}! 매일 명곡 소식을 받으시려면 구독을 눌러주세요."
     audio_path = "voice.mp3"
     generate_voice_sync(script_text, audio_path)
 
@@ -201,7 +205,7 @@ def create_optimized_shorts(singer, song, melon_url, content_html, output_path="
     voice_dur = round(max(float(raw_voice_clip.duration) - 0.08, 3.0), 2)
     voice_clip = safe_subclip(raw_voice_clip, 0, voice_dur)
 
-    print("   [2/4] 신곡 하이라이트 음원 추출 및 오디오 믹싱 중...")
+    print("   [2/4] 하이라이트 음원 추출 및 오디오 믹싱 중...")
     bgm_raw_path = fetch_song_highlight_audio(singer, song, "bgm_raw.m4a")
     bgm_clip_full = None
 
@@ -234,7 +238,7 @@ def create_optimized_shorts(singer, song, melon_url, content_html, output_path="
             final_audio = safe_duration(final_audio, duration)
             print(f"      └ 오디오 믹싱 성공! (총 {duration:.1f}초: 멘트 {voice_dur:.1f}초 + 하이라이트 {duration - voice_dur:.1f}초)")
         except Exception as mix_err:
-            print(f"      [안내] 오디오 믹싱 예외 발생, 기본 음성으로 안전 전환: {mix_err}")
+            print(f"      [안내] 오디오 믹싱 예외 발생, 기본 음성으로 전환: {mix_err}")
             duration = voice_dur
             final_audio = CompositeAudioClip([safe_start(voice_clip, 0)])
             final_audio = safe_duration(final_audio, duration)
@@ -272,8 +276,9 @@ def create_optimized_shorts(singer, song, melon_url, content_html, output_path="
     f_cta_main = get_font_safe(40)
     f_cta_sub = get_font_safe(35)
 
-    draw.rounded_rectangle([240, 195, 840, 265], radius=35, fill=(217, 119, 6))
-    draw.text((540, 230), "오늘의 명품 트로트 신곡", font=f_badge, fill=(255, 255, 255), anchor="mm")
+    badge_fill = (185, 28, 28) if is_popular else (217, 119, 6)
+    draw.rounded_rectangle([220, 195, 860, 265], radius=35, fill=badge_fill)
+    draw.text((540, 230), badge_text, font=f_badge, fill=(255, 255, 255), anchor="mm")
 
     display_song = song if len(song) <= 15 else song[:14] + "..."
     draw.text((540, 345), display_song, font=f_bold, fill=(255, 255, 255), anchor="mm")
@@ -281,7 +286,7 @@ def create_optimized_shorts(singer, song, melon_url, content_html, output_path="
 
     # 하단 구독 유도 + 블로그 링크 이중 배너
     draw.rounded_rectangle([(70, 1525), (1010, 1720)], radius=24, fill=(215, 38, 56))
-    draw.text((540, 1585), "▶ 매일 트로트 신곡 알림 → 오른쪽 [구독] 꾹!", font=f_cta_main, fill=(255, 235, 59), anchor="mm")
+    draw.text((540, 1585), "▶ 매일 트로트 명곡 알림 → 오른쪽 [구독] 꾹!", font=f_cta_main, fill=(255, 235, 59), anchor="mm")
     draw.text((540, 1660), "◀◀ 전곡·가사는 왼쪽 아래 [채널 사진] 누르고 상단 링크!", font=f_cta_sub, fill=(255, 255, 255), anchor="mm")
 
     bg_path = "bg_frame.png"
@@ -298,7 +303,7 @@ def create_optimized_shorts(singer, song, melon_url, content_html, output_path="
 
     raw_card_clip = safe_duration(ImageClip(card_path), duration)
     base_size = 736.0
-    center_y = 455.0 + (base_size / 2.0)  # 기준 중심 Y좌표 (823.0)
+    center_y = 455.0 + (base_size / 2.0)
 
     zoomed_card_clip = safe_resize(raw_card_clip, lambda t: 1.0 + 0.08 * (t / max(duration, 0.1)))
     zoomed_card_clip = safe_position(
@@ -338,7 +343,7 @@ def create_optimized_shorts(singer, song, melon_url, content_html, output_path="
     return output_path
 
 # ================= [LOCKED: Apps Script 웹훅 업로드] =================
-def upload_via_apps_script(file_path, file_name, row_num, new_id):
+def upload_via_apps_script(file_path, file_name, row_num, new_id, sheet_name="최신곡"):
     with open(file_path, "rb") as f:
         b64_data = base64.b64encode(f.read()).decode("utf-8")
 
@@ -347,7 +352,8 @@ def upload_via_apps_script(file_path, file_name, row_num, new_id):
         "fileName": file_name,
         "fileBase64": b64_data,
         "rowNum": row_num,
-        "newId": new_id
+        "newId": new_id,
+        "sheetName": sheet_name
     }
     resp = requests.post(WEBHOOK_URL, json=payload, timeout=120, allow_redirects=True)
     if resp.status_code != 200:
@@ -358,70 +364,84 @@ def upload_via_apps_script(file_path, file_name, row_num, new_id):
         raise RuntimeError(f"Apps Script 내부 처리 오류: {result.get('message') or result.get('error')}")
     return result.get("fileId")
 
-# ================= [LOCKED + 중복 곡 방지: 실행 제어 파이프라인] =================
+# ================= [VERIFIED: 저녁 20:30 '인기곡' 교차 발행 + 중복 곡 방지 실행 제어] =================
 def run_pipeline():
-    rows = sheet.get_all_values()
-    print("[시작] '최신곡' 시트에서 작업 대상을 탐색합니다...")
-
     kst = timezone(timedelta(hours=9))
-    prefix = datetime.now(kst).strftime("%m%d")
+    now_kst = datetime.now(kst)
+    prefix = now_kst.strftime("%m%d")
 
-    current_numbers = []
-    already_processed_songs = set()
-
-    for r in rows:
-        val = str(r[1]).strip() if len(r) > 1 else ""
-        if val.startswith(prefix + "-"):
-            try:
-                num = int(val.split("-")[1])
-                current_numbers.append(num)
-            except Exception:
-                pass
-        # 이미 쇼츠 ID가 발급된 (가수, 곡명) 쌍 수집하여 중복 발행 방지
-        s_name = r[2].strip() if len(r) > 2 else ""
-        t_name = r[3].strip() if len(r) > 3 else ""
-        s_id = r[15].strip() if len(r) > 15 else ""
-        if s_name and t_name and s_id:
-            already_processed_songs.add((s_name, t_name))
-
-    next_seq = (max(current_numbers) + 1) if current_numbers else 1
-    new_id = f"{prefix}-{next_seq}"
+    # 한국 시간(KST) 저녁 황금시간대(19:00~22:59)에는 '인기곡' 탭 우선 탐색, 대기곡 없으면 '최신곡' 자동 폴백
+    if 19 <= now_kst.hour <= 22:
+        tab_priority = ["인기곡", "최신곡"]
+    else:
+        tab_priority = ["최신곡"]
 
     processed = False
-    for idx in range(3, len(rows)):
-        row_num = idx + 1
-        singer = rows[idx][2].strip() if len(rows[idx]) > 2 else ""
-        song = rows[idx][3].strip() if len(rows[idx]) > 3 else ""
-        melon_url = rows[idx][4].strip() if len(rows[idx]) > 4 else ""
-        status = rows[idx][7].strip() if len(rows[idx]) > 7 else ""
-        shorts_id = rows[idx][15].strip() if len(rows[idx]) > 15 else ""
-        content_html = rows[idx][6] if len(rows[idx]) > 6 else ""
+    for tab_name in tab_priority:
+        try:
+            target_sheet = spreadsheet.worksheet(tab_name)
+        except Exception:
+            print(f"[안내] '{tab_name}' 시트 탭을 찾을 수 없어 다음 탭으로 넘어갑니다.")
+            continue
 
-        if status == "Published" and not shorts_id:
-            if (singer, song) in already_processed_songs:
-                print(f"[중복 스킵] {row_num}행: {singer} - {song} (이미 발행된 곡)")
-                continue
+        rows = target_sheet.get_all_values()
+        print(f"[시작] '{tab_name}' 시트에서 작업 대상을 탐색합니다... (KST {now_kst.strftime('%H:%M')})")
 
-            processed = True
-            print(f"\n[대상 포착] {row_num}행: {singer} - {song} (발행 ID: {new_id})")
+        current_numbers = []
+        already_processed_songs = set()
 
-            clean_singer = "".join(c for c in singer if c.isalnum() or c in (" ", "_")).strip()
-            clean_song = "".join(c for c in song if c.isalnum() or c in (" ", "_")).strip()
-            video_filename = f"Shorts_{new_id}_{clean_singer}_{clean_song}.mp4"
+        for r in rows:
+            val = str(r[1]).strip() if len(r) > 1 else ""
+            if val.startswith(prefix + "-"):
+                try:
+                    num = int(val.split("-")[1])
+                    current_numbers.append(num)
+                except Exception:
+                    pass
+            # 이미 쇼츠 ID가 발급된 (가수, 곡명) 쌍 수집하여 중복 발행 방지
+            s_name = r[2].strip() if len(r) > 2 else ""
+            t_name = r[3].strip() if len(r) > 3 else ""
+            s_id = r[15].strip() if len(r) > 15 else ""
+            if s_name and t_name and s_id:
+                already_processed_songs.add((s_name, t_name))
 
-            try:
-                rendered = create_optimized_shorts(singer, song, melon_url, content_html, video_filename)
-                print("   [전송] 대표님 Google Drive(Shorts_Auto) 및 시트 동기화 요청 중...")
-                drive_id = upload_via_apps_script(rendered, video_filename, row_num, new_id)
+        next_seq = (max(current_numbers) + 1) if current_numbers else 1
+        new_id = f"{prefix}-{next_seq}"
 
-                print(f"\n[성공] {row_num}행: ID [{new_id}] / Drive ID [{drive_id}] / 'Shorts_Ready' 확정 완료!")
-                if os.path.exists(rendered):
-                    os.remove(rendered)
-                break
+        for idx in range(3, len(rows)):
+            row_num = idx + 1
+            singer = rows[idx][2].strip() if len(rows[idx]) > 2 else ""
+            song = rows[idx][3].strip() if len(rows[idx]) > 3 else ""
+            melon_url = rows[idx][4].strip() if len(rows[idx]) > 4 else ""
+            status = rows[idx][7].strip() if len(rows[idx]) > 7 else ""
+            shorts_id = rows[idx][15].strip() if len(rows[idx]) > 15 else ""
+            content_html = rows[idx][6] if len(rows[idx]) > 6 else ""
 
-            except Exception as e:
-                print(f"[전송/렌더링 실패] {str(e)}")
-                break
+            if status == "Published" and not shorts_id:
+                if (singer, song) in already_processed_songs:
+                    print(f"[중복 스킵] [{tab_name}] {row_num}행: {singer} - {song} (이미 발행된 곡)")
+                    continue
+
+                processed = True
+                print(f"\n[대상 포착] [{tab_name}] {row_num}행: {singer} - {song} (발행 ID: {new_id})")
+
+                clean_singer = "".join(c for c in singer if c.isalnum() or c in (" ", "_")).strip()
+                clean_song = "".join(c for c in song if c.isalnum() or c in (" ", "_")).strip()
+                video_filename = f"Shorts_{new_id}_{clean_singer}_{clean_song}.mp4"
+
+                try:
+                    rendered = create_optimized_shorts(singer, song, melon_url, content_html, tab_name, video_filename)
+                    print(f"   [전송] 대표님 Google Drive(Shorts_Auto) 및 [{tab_name}] 시트 동기화 요청 중...")
+                    drive_id = upload_via_apps_script(rendered, video_filename, row_num, new_id, tab_name)
+
+                    print(f"\n[성공] [{tab_name}] {row_num}행: ID [{new_id}] / Drive ID [{drive_id}] / 'Shorts_Ready' 확정 완료!")
+                    if os.path.exists(rendered):
+                        os.remove(rendered)
+                    return
+
+                except Exception as e:
+                    print(f"[전송/렌더링 실패] {str(e)}")
+                    return
 
     if not processed:
         print("[안내] 현재 처리 대기 중인 대상(Published & File ID 공란)이 없습니다.")
