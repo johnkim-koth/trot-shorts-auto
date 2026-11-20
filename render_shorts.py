@@ -3,6 +3,7 @@ import re
 import json
 import base64
 import asyncio
+import urllib.parse
 from datetime import datetime, timezone, timedelta
 import requests
 from bs4 import BeautifulSoup
@@ -11,15 +12,15 @@ import gspread
 from google.oauth2.service_account import Credentials
 import edge_tts
 import yt_dlp
-from PIL import Image, ImageDraw, ImageFont, ImageFilter
+from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageOps
 
 # ================= [LOCKED: moviepy v1/v2 호환 래퍼] =================
 try:
-    from moviepy import ImageClip, AudioFileClip, CompositeAudioClip, concatenate_audioclips
+    from moviepy import ImageClip, AudioFileClip, CompositeVideoClip, CompositeAudioClip, concatenate_audioclips
     from moviepy.audio.fx import AudioFadeOut, MultiplyVolume
     MOVIEPY_V2 = True
 except ImportError:
-    from moviepy.editor import ImageClip, AudioFileClip, CompositeAudioClip, concatenate_audioclips
+    from moviepy.editor import ImageClip, AudioFileClip, CompositeVideoClip, CompositeAudioClip, concatenate_audioclips
     from moviepy.audio.fx.all import audio_fadeout, volumex
     MOVIEPY_V2 = False
 
@@ -41,6 +42,16 @@ def safe_start(clip, start_t):
     if hasattr(clip, "with_start"):
         return clip.with_start(float(start_t))
     return clip.set_start(float(start_t))
+
+def safe_position(clip, pos):
+    if hasattr(clip, "with_position"):
+        return clip.with_position(pos)
+    return clip.set_position(pos)
+
+def safe_resize(clip, scale_func):
+    if hasattr(clip, "resized"):
+        return clip.resized(scale_func)
+    return clip.resize(scale_func)
 
 def safe_subclip(clip, start_t, end_t):
     if hasattr(clip, "subclipped"):
@@ -73,24 +84,67 @@ if not WEBHOOK_URL:
 SPREADSHEET_NAME = "Copy of 블로그 자동화 관리 시트"
 sheet = gc.open(SPREADSHEET_NAME).worksheet("최신곡")
 
-# ================= [LOCKED: 멜론 앨범 자켓 크롤러] =================
-def get_melon_album_art(melon_song_url):
+# ================= [VERIFIED: 3중 백업 고화질 앨범 자켓 확보 엔진] =================
+def get_best_album_art(singer, song, melon_song_url, content_html):
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     }
-    try:
-        if not melon_song_url or not melon_song_url.startswith("http"):
+
+    def _download_valid_image(url):
+        if not url or not isinstance(url, str) or not url.startswith("http"):
             return None
-        res = requests.get(melon_song_url, headers=headers, timeout=8)
-        if res.status_code == 200:
-            soup = BeautifulSoup(res.text, "html.parser")
+        try:
+            clean_url = url.split("?")[0]
+            clean_url = re.sub(r"resize/\d+", "resize/500", clean_url)
+            res = requests.get(clean_url, headers=headers, timeout=8)
+            if res.status_code == 200 and len(res.content) > 3000:
+                img = Image.open(BytesIO(res.content)).convert("RGB")
+                if img.width >= 150 and img.height >= 150:
+                    return img
+        except Exception:
+            pass
+        return None
+
+    # 1순위: 시트 E열(Melon Album Link) 직접 크롤링
+    if melon_song_url and isinstance(melon_song_url, str) and melon_song_url.startswith("http"):
+        try:
+            res = requests.get(melon_song_url, headers=headers, timeout=8)
+            if res.status_code == 200:
+                soup = BeautifulSoup(res.text, "html.parser")
+                meta_img = soup.find("meta", property="og:image")
+                if meta_img and meta_img.get("content"):
+                    img = _download_valid_image(meta_img["content"])
+                    if img:
+                        return img
+        except Exception:
+            pass
+
+    # 2순위: 멜론 검색으로 앨범 상세페이지 역추적
+    try:
+        q = urllib.parse.quote(f"{singer} {song}")
+        res = requests.get(f"https://www.melon.com/search/total/index.htm?q={q}", headers=headers, timeout=8)
+        album_ids = re.findall(r"goAlbumDetail\('(\d+)'\)", res.text) or re.findall(r"albumId=(\d+)", res.text)
+        if album_ids:
+            detail_res = requests.get(f"https://www.melon.com/album/detail.htm?albumId={album_ids[0]}", headers=headers, timeout=8)
+            soup = BeautifulSoup(detail_res.text, "html.parser")
             meta_img = soup.find("meta", property="og:image")
             if meta_img and meta_img.get("content"):
-                img_url = meta_img["content"].split("?")[0]
-                img_url = re.sub(r"resize/\d+", "resize/500", img_url)
-                return img_url
-    except Exception as e:
-        print(f"      [안내] 멜론 크롤링 예외: {e}")
+                img = _download_valid_image(meta_img["content"])
+                if img:
+                    return img
+    except Exception:
+        pass
+
+    # 3순위: 시트 G열(Draft/Content) 본문 HTML 내 삽입된 이미지 백업 추출
+    if content_html and isinstance(content_html, str):
+        img_urls = re.findall(r'<img[^>]+src=["\']([^"\']+)["\']', content_html)
+        for u in img_urls:
+            if "unsplash.com" in u:
+                continue
+            img = _download_valid_image(u)
+            if img:
+                return img
+
     return None
 
 async def _async_generate_voice(text, filename="voice.mp3"):
@@ -136,10 +190,9 @@ def get_font_safe(size):
                 pass
     return ImageFont.load_default()
 
-# ================= [UPDATED: 구독 전환 & 하이라이트 극대화 쇼츠 엔진] =================
-def create_optimized_shorts(singer, song, album_url, output_path="shorts.mp4"):
+# ================= [VERIFIED: 3중 자켓 백업 + 정중앙 Ken Burns 줌인 쇼츠 엔진] =================
+def create_optimized_shorts(singer, song, melon_url, content_html, output_path="shorts.mp4"):
     print("   [1/4] Edge-TTS AI 아나운서 음성 생성 중 (핵심 4.5초 압축)...")
-    # 나레이션을 4.5초 이내로 압축해 가수의 실제 노래 감상 시간을 11초 이상 확보
     script_text = f"명품 트로트 신곡, 가수 {singer}의 {song}! 매일 신곡 소식을 받으시려면 구독을 눌러주세요."
     audio_path = "voice.mp3"
     generate_voice_sync(script_text, audio_path)
@@ -156,7 +209,6 @@ def create_optimized_shorts(singer, song, album_url, output_path="shorts.mp4"):
         try:
             bgm_clip_full = AudioFileClip(bgm_raw_path)
             raw_bgm_dur = float(bgm_clip_full.duration)
-            # 총 길이를 16초 이상 확보 (나레이션 4.5초 + 원곡 하이라이트 11.5초)
             target_total = max(voice_dur + 11.5, 16.0)
 
             if raw_bgm_dur > target_total + 45:
@@ -192,54 +244,76 @@ def create_optimized_shorts(singer, song, album_url, output_path="shorts.mp4"):
         final_audio = safe_duration(final_audio, duration)
         print(f"      └ 기본 나레이션 단독 모드 적용 ({duration:.1f}초)")
 
-    print("   [3/4] 공식 앨범 자켓 및 5060 구독 유도 화면 구성 중...")
-    jacket_img = None
-    if album_url and album_url.startswith("http"):
-        try:
-            res = requests.get(album_url, timeout=8)
-            jacket_img = Image.open(BytesIO(res.content)).convert("RGB")
-        except Exception:
-            jacket_img = None
+    print("   [3/4] 3중 백업 앨범 자켓 확보 및 줌인(Zoom-in) 모션 레이어 구성 중...")
+    jacket_img = get_best_album_art(singer, song, melon_url, content_html)
 
     if jacket_img is None:
-        jacket_img = Image.new("RGB", (720, 720), color=(45, 35, 60))
+        # 최종 폴백: 골드 LP 레코드 스타일 타이포 카드
+        jacket_img = Image.new("RGB", (720, 720), color=(24, 30, 52))
         d_temp = ImageDraw.Draw(jacket_img)
-        f_temp = get_font_safe(55)
-        d_temp.text((360, 320), singer, font=f_temp, fill=(255, 255, 255), anchor="mm")
-        d_temp.text((360, 400), song, font=f_temp, fill=(255, 215, 0), anchor="mm")
+        d_temp.ellipse([40, 40, 680, 680], outline=(255, 215, 0), width=6)
+        d_temp.ellipse([120, 120, 600, 600], outline=(100, 116, 139), width=3)
+        f_temp_singer = get_font_safe(58)
+        f_temp_song = get_font_safe(50)
+        d_temp.text((360, 310), singer, font=f_temp_singer, fill=(255, 215, 0), anchor="mm")
+        d_temp.text((360, 410), song, font=f_temp_song, fill=(255, 255, 255), anchor="mm")
 
-    jacket_img = jacket_img.resize((720, 720), Image.Resampling.LANCZOS)
+    jacket_img = ImageOps.fit(jacket_img, (720, 720), Image.Resampling.LANCZOS)
 
+    # 1) 배경 레이어 (블러 + 다크 오버레이 + 상/하단 타이포그래피)
     bg_img = jacket_img.resize((1080, 1920), Image.Resampling.BICUBIC).filter(ImageFilter.GaussianBlur(radius=45))
-    overlay = Image.new("RGBA", (1080, 1920), (0, 0, 0, 135))
+    overlay = Image.new("RGBA", (1080, 1920), (0, 0, 0, 145))
     bg_img = Image.alpha_composite(bg_img.convert("RGBA"), overlay).convert("RGB")
 
-    border = Image.new("RGB", (728, 728), (255, 255, 255))
-    border.paste(jacket_img, (4, 4))
-    bg_img.paste(border, (176, 460))
-
     draw = ImageDraw.Draw(bg_img)
-    f_bold = get_font_safe(60)
-    f_sub = get_font_safe(44)
-    f_guide = get_font_safe(36)
+    f_badge = get_font_safe(42)
+    f_bold = get_font_safe(62)
+    f_singer = get_font_safe(54)
+    f_cta_main = get_font_safe(40)
+    f_cta_sub = get_font_safe(35)
 
-    draw.text((540, 240), "[ 신곡 하이라이트 감상 ]", font=f_sub, fill=(255, 215, 0), anchor="mm")
-    draw.text((540, 340), f"{song}", font=f_bold, fill=(255, 255, 255), anchor="mm")
-    draw.text((540, 1240), f"가수: {singer}", font=f_bold, fill=(255, 255, 255), anchor="mm")
+    draw.rounded_rectangle([240, 195, 840, 265], radius=35, fill=(217, 119, 6))
+    draw.text((540, 230), "오늘의 명품 트로트 신곡", font=f_badge, fill=(255, 255, 255), anchor="mm")
 
-    # 상단 구독 유도 + 하단 전곡/가사 링크 안내 병기
-    draw.rectangle([(80, 1545), (1000, 1715)], fill=(215, 38, 56))
-    draw.text((540, 1598), "▶ 매일 트로트 신곡 알림 → 오른쪽 [구독] 꾹!", font=f_guide, fill=(255, 235, 59), anchor="mm")
-    draw.text((540, 1662), "◀◀ 전곡·가사는 왼쪽 아래 [채널 사진] 누르고 상단 링크!", font=f_guide, fill=(255, 255, 255), anchor="mm")
+    display_song = song if len(song) <= 15 else song[:14] + "..."
+    draw.text((540, 345), display_song, font=f_bold, fill=(255, 255, 255), anchor="mm")
+    draw.text((540, 1255), f"가수 : {singer}", font=f_singer, fill=(255, 215, 0), anchor="mm")
 
-    frame_path = "frame.png"
-    bg_img.save(frame_path, "PNG")
+    # 하단 구독 유도 + 블로그 링크 이중 배너
+    draw.rounded_rectangle([(70, 1525), (1010, 1720)], radius=24, fill=(215, 38, 56))
+    draw.text((540, 1585), "▶ 매일 트로트 신곡 알림 → 오른쪽 [구독] 꾹!", font=f_cta_main, fill=(255, 235, 59), anchor="mm")
+    draw.text((540, 1660), "◀◀ 전곡·가사는 왼쪽 아래 [채널 사진] 누르고 상단 링크!", font=f_cta_sub, fill=(255, 255, 255), anchor="mm")
 
-    print(f"   [4/4] MP4 비디오 렌더링 인코딩 중 ({duration}초, yuv420p 표준 호환)...")
-    clip = safe_duration(ImageClip(frame_path), duration)
-    clip = safe_audio(clip, final_audio)
-    clip.fps = 24
-    clip.write_videofile(
+    bg_path = "bg_frame.png"
+    bg_img.save(bg_path, "PNG")
+
+    # 2) 중앙 자켓 카드 레이어 (정중앙 좌표 고정 후 1.00 -> 1.08 줌인)
+    card_with_border = Image.new("RGB", (736, 736), (255, 255, 255))
+    card_with_border.paste(jacket_img, (8, 8))
+    card_path = "card_frame.png"
+    card_with_border.save(card_path, "PNG")
+
+    print(f"   [4/4] MP4 모션 비디오 렌더링 인코딩 중 ({duration}초, Ken Burns 줌인 적용)...")
+    bg_clip = safe_duration(ImageClip(bg_path), duration)
+
+    raw_card_clip = safe_duration(ImageClip(card_path), duration)
+    base_size = 736.0
+    center_y = 455.0 + (base_size / 2.0)  # 기준 중심 Y좌표 (823.0)
+
+    zoomed_card_clip = safe_resize(raw_card_clip, lambda t: 1.0 + 0.08 * (t / max(duration, 0.1)))
+    zoomed_card_clip = safe_position(
+        zoomed_card_clip,
+        lambda t: (
+            int(round((1080.0 - base_size * (1.0 + 0.08 * (t / max(duration, 0.1)))) / 2.0)),
+            int(round(center_y - (base_size * (1.0 + 0.08 * (t / max(duration, 0.1)))) / 2.0))
+        )
+    )
+
+    final_clip = CompositeVideoClip([bg_clip, zoomed_card_clip], size=(1080, 1920))
+    final_clip = safe_duration(final_clip, duration)
+    final_clip = safe_audio(final_clip, final_audio)
+    final_clip.fps = 24
+    final_clip.write_videofile(
         output_path,
         codec="libx264",
         audio_codec="aac",
@@ -251,11 +325,13 @@ def create_optimized_shorts(singer, song, album_url, output_path="shorts.mp4"):
         raw_voice_clip.close()
         if bgm_clip_full:
             bgm_clip_full.close()
-        clip.close()
+        bg_clip.close()
+        raw_card_clip.close()
+        final_clip.close()
     except Exception:
         pass
 
-    for temp_f in [audio_path, frame_path, "bgm_raw.m4a"]:
+    for temp_f in [audio_path, bg_path, card_path, "bgm_raw.m4a"]:
         if os.path.exists(temp_f):
             os.remove(temp_f)
 
@@ -282,7 +358,7 @@ def upload_via_apps_script(file_path, file_name, row_num, new_id):
         raise RuntimeError(f"Apps Script 내부 처리 오류: {result.get('message') or result.get('error')}")
     return result.get("fileId")
 
-# ================= [UPDATED: 중복 곡 방지 필터 추가된 실행 제어] =================
+# ================= [LOCKED + 중복 곡 방지: 실행 제어 파이프라인] =================
 def run_pipeline():
     rows = sheet.get_all_values()
     print("[시작] '최신곡' 시트에서 작업 대상을 탐색합니다...")
@@ -329,17 +405,12 @@ def run_pipeline():
             processed = True
             print(f"\n[대상 포착] {row_num}행: {singer} - {song} (발행 ID: {new_id})")
 
-            jacket_url = get_melon_album_art(melon_url)
-            if not jacket_url:
-                m = re.search(r'<img[^>]+src=["\']([^"\']+)["\']', content_html)
-                jacket_url = m.group(1) if m else None
-
             clean_singer = "".join(c for c in singer if c.isalnum() or c in (" ", "_")).strip()
             clean_song = "".join(c for c in song if c.isalnum() or c in (" ", "_")).strip()
             video_filename = f"Shorts_{new_id}_{clean_singer}_{clean_song}.mp4"
 
             try:
-                rendered = create_optimized_shorts(singer, song, jacket_url, video_filename)
+                rendered = create_optimized_shorts(singer, song, melon_url, content_html, video_filename)
                 print("   [전송] 대표님 Google Drive(Shorts_Auto) 및 시트 동기화 요청 중...")
                 drive_id = upload_via_apps_script(rendered, video_filename, row_num, new_id)
 
