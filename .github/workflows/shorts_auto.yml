@@ -35,4 +35,5 @@ jobs:
         env:
           GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
           APPS_SCRIPT_WEBHOOK: ${{ secrets.APPS_SCRIPT_WEBHOOK }}
+          YT_COOKIES: ${{ secrets.YT_COOKIES }}
         run: python render_shorts.py
