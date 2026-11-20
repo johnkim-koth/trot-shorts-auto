@@ -154,9 +154,23 @@ async def _async_generate_voice(text, filename="voice.mp3"):
 def generate_voice_sync(text, filename="voice.mp3"):
     asyncio.run(_async_generate_voice(text, filename))
 
+# ================= [VERIFIED: 보조 계정 YT_COOKIES 연동 원곡 하이라이트 음원 추출기] =================
 def fetch_song_highlight_audio(singer, song, out_filename="bgm_raw.m4a"):
     if os.path.exists(out_filename):
         os.remove(out_filename)
+
+    cookie_path = "/tmp/yt_cookies.txt"
+    yt_cookies_env = os.environ.get("YT_COOKIES", "").strip()
+    has_cookie = False
+
+    if yt_cookies_env:
+        try:
+            with open(cookie_path, "w", encoding="utf-8") as cf:
+                cf.write(yt_cookies_env + "\n")
+            if os.path.exists(cookie_path) and os.path.getsize(cookie_path) > 50:
+                has_cookie = True
+        except Exception as ce:
+            print(f"      [안내] 쿠키 파일 기록 건너뜀: {ce}")
 
     query = f"ytsearch1:{singer} {song} 가사 audio"
     ydl_opts = {
@@ -165,15 +179,26 @@ def fetch_song_highlight_audio(singer, song, out_filename="bgm_raw.m4a"):
         "quiet": True,
         "no_warnings": True,
         "noplaylist": True,
-        "socket_timeout": 12,
+        "socket_timeout": 15,
+        "extractor_args": {"youtube": {"player_client": ["web", "android"]}},
     }
+    if has_cookie:
+        ydl_opts["cookiefile"] = cookie_path
+        print("      └ 보조 계정 쿠키(YT_COOKIES) 인증 적용됨")
+
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.extract_info(query, download=True)
             if os.path.exists(out_filename) and os.path.getsize(out_filename) > 10000:
                 return out_filename
     except Exception as e:
-        print(f"      [안내] 신곡 배경음 추출 건너뜀 (나레이션 단독 모드 전환): {e}")
+        print(f"      [안내] 신곡 배경음 추출 건너뜀 (나레이션 단독 모드 안전 전환): {e}")
+    finally:
+        if os.path.exists(cookie_path):
+            try:
+                os.remove(cookie_path)
+            except Exception:
+                pass
     return None
 
 def get_font_safe(size):
