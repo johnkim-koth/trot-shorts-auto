@@ -106,7 +106,6 @@ def get_best_album_art(singer, song, melon_song_url, content_html):
             pass
         return None
 
-    # 1순위: 시트 E열(Melon Album Link) 직접 크롤링
     if melon_song_url and isinstance(melon_song_url, str) and melon_song_url.startswith("http"):
         try:
             res = requests.get(melon_song_url, headers=headers, timeout=8)
@@ -120,7 +119,6 @@ def get_best_album_art(singer, song, melon_song_url, content_html):
         except Exception:
             pass
 
-    # 2순위: 멜론 검색으로 앨범 상세페이지 역추적
     try:
         q = urllib.parse.quote(f"{singer} {song}")
         res = requests.get(f"https://www.melon.com/search/total/index.htm?q={q}", headers=headers, timeout=8)
@@ -136,7 +134,6 @@ def get_best_album_art(singer, song, melon_song_url, content_html):
     except Exception:
         pass
 
-    # 3순위: 시트 G열(Draft/Content) 본문 HTML 내 삽입된 이미지 백업 추출
     if content_html and isinstance(content_html, str):
         img_urls = re.findall(r'<img[^>]+src=["\']([^"\']+)["\']', content_html)
         for u in img_urls:
@@ -212,38 +209,14 @@ async def _async_generate_voice(text, filename="voice.mp3"):
 def generate_voice_sync(text, filename="voice.mp3"):
     asyncio.run(_async_generate_voice(text, filename))
 
-# ================= [RESTORED & HARDENED: 과거 성공 음원 추출 + 20회 검증 믹서] =================
-def _cleanup_bgm_artifacts(out_filename="bgm_raw.m4a"):
-    base_prefix = os.path.splitext(out_filename)[0]
+# ================= [STABLE: 단일 패스 안전 음원 추출(반복 에러 루프 없음)] =================
+def fetch_song_highlight_audio(singer, song, yt_direct_url="", out_filename="bgm_raw.m4a"):
     for f in os.listdir("."):
-        if f.startswith(base_prefix + ".") or f.startswith("bgm_dl."):
+        if f.startswith("bgm_raw."):
             try:
                 os.remove(f)
             except Exception:
                 pass
-
-def _pick_downloaded_audio_file(out_filename="bgm_raw.m4a"):
-    candidates = [
-        f for f in os.listdir(".")
-        if (f.startswith("bgm_dl.") or f.startswith(os.path.splitext(out_filename)[0] + "."))
-        and os.path.isfile(f)
-        and os.path.getsize(f) > 10000
-    ]
-    if not candidates:
-        return None
-    priority = {".m4a": 1, ".mp3": 2, ".aac": 3, ".opus": 4, ".ogg": 5, ".webm": 6}
-    candidates.sort(key=lambda fn: priority.get(os.path.splitext(fn)[1].lower(), 99))
-    chosen = candidates[0]
-    if chosen != out_filename:
-        try:
-            os.replace(chosen, out_filename)
-            return out_filename
-        except Exception:
-            return chosen
-    return chosen
-
-def fetch_song_highlight_audio(singer, song, yt_direct_url="", out_filename="bgm_raw.m4a"):
-    _cleanup_bgm_artifacts(out_filename)
 
     cookie_path = "/tmp/yt_cookies.txt"
     yt_cookies_env = os.environ.get("YT_COOKIES", "").strip()
@@ -256,123 +229,44 @@ def fetch_song_highlight_audio(singer, song, yt_direct_url="", out_filename="bgm
                 cf.write("\n".join(normalized_lines) + "\n")
             if os.path.exists(cookie_path) and os.path.getsize(cookie_path) > 100:
                 has_cookie = True
-        except Exception as ce:
-            print(f"      [안내] 쿠키 파일 기록 건너뜀: {ce}")
+        except Exception:
+            pass
 
-    clean_singer = re.sub(r"\s*[\(\[\{][^\)\]\}]*[\)\]\}]\s*", " ", str(singer or "")).strip() or str(singer or "").strip()
-    clean_song = re.sub(r"\s*[\(\[\{][^\)\]\}]*[\)\]\}]\s*", " ", str(song or "")).strip() or str(song or "").strip()
-
-    queries = []
     clean_yt_url = yt_direct_url.strip() if isinstance(yt_direct_url, str) else ""
     if clean_yt_url.startswith("http") and ("youtube.com" in clean_yt_url or "youtu.be" in clean_yt_url):
-        queries.append(("시트 M열 직통 링크", clean_yt_url))
-    queries.append(("가사/음원 검색", f"ytsearch1:{clean_singer} {clean_song} 가사 audio"))
-    queries.append(("노래 검색", f"ytsearch1:{clean_singer} {clean_song} 노래"))
-
-    format_selectors = [
-        "bestaudio[ext=m4a]/bestaudio/best",
-        "bestaudio/best",
-        "best[ext=mp4]/best"
-    ]
-
-    strategies = []
-    if has_cookie:
-        strategies.append({
-            "label": "1차: 보조 계정 쿠키(YT_COOKIES) + tv_embedded/web",
-            "cookie": cookie_path,
-            "client": ["tv_embedded", "web"]
-        })
-    strategies.append({
-        "label": "2차: 모바일 우회(ios/android/mweb) 무쿠키",
-        "cookie": None,
-        "client": ["ios", "android", "mweb"]
-    })
-    strategies.append({
-        "label": "3차: 기본 클라이언트(무쿠키) 폴백",
-        "cookie": None,
-        "client": None
-    })
+        target = clean_yt_url
+    else:
+        target = f"ytsearch1:{singer} {song} 가사 audio"
 
     try:
-        for src_label, q_target in queries:
-            for st in strategies:
-                for fmt_str in format_selectors:
-                    _cleanup_bgm_artifacts(out_filename)
-                    ydl_opts = {
-                        "format": fmt_str,
-                        "outtmpl": "bgm_dl.%(ext)s",
-                        "quiet": True,
-                        "no_warnings": True,
-                        "noplaylist": True,
-                        "socket_timeout": 15,
-                        "retries": 2,
-                    }
-                    if st["cookie"]:
-                        ydl_opts["cookiefile"] = st["cookie"]
-                    if st["client"]:
-                        ydl_opts["extractor_args"] = {"youtube": {"player_client": st["client"]}}
+        opts = {
+            "format": "bestaudio/best",
+            "outtmpl": "bgm_raw.%(ext)s",
+            "quiet": True,
+            "no_warnings": True,
+            "noprogress": True,
+            "noplaylist": True,
+            "socket_timeout": 12,
+            "retries": 0,
+        }
+        if has_cookie:
+            opts["cookiefile"] = cookie_path
 
-                    try:
-                        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                            ydl.extract_info(q_target, download=True)
-                        ready_file = _pick_downloaded_audio_file(out_filename)
-                        if ready_file:
-                            print(f"      └ 음원 추출 성공! ({src_label} / {st['label']} / fmt={fmt_str})")
-                            return ready_file
-                    except Exception:
-                        continue
-            print(f"      [안내] '{src_label}' 경로에서 가용 스트림 없음 -> 다음 경로 시도")
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            ydl.extract_info(target, download=True)
+
+        files = [f for f in os.listdir(".") if f.startswith("bgm_raw.") and os.path.isfile(f) and os.path.getsize(f) > 10000]
+        if files:
+            return files[0]
+        return None
+    except Exception:
+        return None
     finally:
         if os.path.exists(cookie_path):
             try:
                 os.remove(cookie_path)
             except Exception:
                 pass
-        for f in os.listdir("."):
-            if f.startswith("bgm_dl."):
-                try:
-                    os.remove(f)
-                except Exception:
-                    pass
-
-    return None
-
-def mix_narration_and_bgm(voice_clip, voice_dur, bgm_raw_path):
-    bgm_clip_full = None
-    if bgm_raw_path and os.path.exists(bgm_raw_path):
-        try:
-            bgm_clip_full = AudioFileClip(bgm_raw_path)
-            raw_bgm_dur = float(bgm_clip_full.duration)
-            if raw_bgm_dur > voice_dur + 1.5:
-                target_total = max(voice_dur + 13.0, 20.0)
-                if raw_bgm_dur > target_total + 45:
-                    start_sec = 45.0
-                elif raw_bgm_dur > target_total + 15:
-                    start_sec = 15.0
-                else:
-                    start_sec = 0.0
-
-                end_sec = round(min(start_sec + target_total, raw_bgm_dur - 0.25), 2)
-                if end_sec > start_sec + voice_dur + 1.0:
-                    bgm_sub = safe_subclip(bgm_clip_full, start_sec, end_sec)
-                    duration = round(end_sec - start_sec, 2)
-
-                    bgm_part1 = safe_volumex(safe_subclip(bgm_sub, 0, voice_dur), 0.22)
-                    bgm_part2 = safe_volumex(safe_subclip(bgm_sub, voice_dur, duration), 1.00)
-                    bgm_ducked = concatenate_audioclips([bgm_part1, bgm_part2])
-                    bgm_ducked = safe_fadeout(bgm_ducked, 1.5)
-                    bgm_ducked = safe_duration(bgm_ducked, duration)
-
-                    final_audio = CompositeAudioClip([bgm_ducked, safe_start(voice_clip, 0)])
-                    final_audio = safe_duration(final_audio, duration)
-                    return final_audio, duration, True, bgm_clip_full
-        except Exception as mix_err:
-            print(f"      [안내] 오디오 믹싱 예외 발생, 컴팩트 나레이션 모드로 안전 전환: {mix_err}")
-
-    duration = round(max(voice_dur, 7.5), 2)
-    final_audio = CompositeAudioClip([safe_start(voice_clip, 0)])
-    final_audio = safe_duration(final_audio, duration)
-    return final_audio, duration, False, bgm_clip_full
 
 def get_font_safe(size):
     candidates = [
@@ -419,13 +313,38 @@ def create_optimized_shorts(singer, song, melon_url, content_html, yt_direct_url
     voice_dur = round(max(float(raw_voice_clip.duration) - 0.12, 3.0), 2)
     voice_clip = safe_subclip(raw_voice_clip, 0, voice_dur)
 
-    print("   [2/4] 원곡 하이라이트 음원 추출 및 오디오 덕킹 믹싱 중...")
+    print("   [2/4] 하이라이트 음원 확인 및 오디오 구성 중...")
     bgm_raw_path = fetch_song_highlight_audio(singer, song, yt_direct_url, "bgm_raw.m4a")
-    final_audio, duration, has_bgm, bgm_clip_full = mix_narration_and_bgm(voice_clip, voice_dur, bgm_raw_path)
-    if has_bgm:
-        print(f"      └ 오디오 믹싱 성공! (총 {duration:.1f}초: 멘트 {voice_dur:.1f}초 + 하이라이트 {duration - voice_dur:.1f}초)")
-    else:
-        print(f"      └ 음원 미추출 → 컴팩트 나레이션 모드 적용 ({duration:.1f}초)")
+    bgm_clip_full = None
+    has_bgm = False
+
+    if bgm_raw_path:
+        try:
+            bgm_clip_full = AudioFileClip(bgm_raw_path)
+            raw_bgm_dur = float(bgm_clip_full.duration)
+            if raw_bgm_dur > voice_dur + 1.5:
+                target_total = max(voice_dur + 13.0, 20.0)
+                start_sec = 30.0 if raw_bgm_dur > target_total + 30 else 0.0
+                end_sec = round(min(start_sec + target_total, raw_bgm_dur - 0.25), 2)
+                if end_sec > start_sec + voice_dur + 1.0:
+                    bgm_sub = safe_subclip(bgm_clip_full, start_sec, end_sec)
+                    duration = round(end_sec - start_sec, 2)
+                    bgm_part1 = safe_volumex(safe_subclip(bgm_sub, 0, voice_dur), 0.22)
+                    bgm_part2 = safe_volumex(safe_subclip(bgm_sub, voice_dur, duration), 1.00)
+                    bgm_ducked = concatenate_audioclips([bgm_part1, bgm_part2])
+                    bgm_ducked = safe_fadeout(bgm_ducked, 1.5)
+                    bgm_ducked = safe_duration(bgm_ducked, duration)
+                    final_audio = CompositeAudioClip([bgm_ducked, safe_start(voice_clip, 0)])
+                    final_audio = safe_duration(final_audio, duration)
+                    has_bgm = True
+        except Exception:
+            has_bgm = False
+
+    if not has_bgm:
+        duration = round(max(voice_dur, 7.5), 2)
+        final_audio = CompositeAudioClip([safe_start(voice_clip, 0)])
+        final_audio = safe_duration(final_audio, duration)
+        print(f"      └ 나레이션 모드 적용 ({duration:.1f}초)")
 
     print("   [3/4] 3중 백업 앨범 자켓 확보 및 구독 전환 레이어 구성 중...")
     jacket_img = get_best_album_art(singer, song, melon_url, content_html)
@@ -545,7 +464,12 @@ def create_optimized_shorts(singer, song, melon_url, content_html, yt_direct_url
     for temp_f in [audio_path, bg_path, ending_path, card_path]:
         if os.path.exists(temp_f):
             os.remove(temp_f)
-    _cleanup_bgm_artifacts("bgm_raw.m4a")
+    for f in os.listdir("."):
+        if f.startswith("bgm_raw."):
+            try:
+                os.remove(f)
+            except Exception:
+                pass
 
     return output_path
 
