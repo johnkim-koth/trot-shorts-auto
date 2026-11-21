@@ -147,7 +147,7 @@ def get_best_album_art(singer, song, melon_song_url, content_html):
 
     return None
 
-# ================= [NEW: 시트 G열 본문에서 앨범 임팩트 한 줄 소개 자동 추출기] =================
+# ================= [LOCKED: 시트 G열 본문에서 앨범 임팩트 한 줄 소개 자동 추출기] =================
 def build_impact_narration(singer, song, content_html, is_popular=False):
     default_intro = (
         f"시청자 여러분이 사랑하는 트로트 명곡! 가수 {singer}의 {song}입니다."
@@ -194,9 +194,8 @@ def build_impact_narration(singer, song, content_html, is_popular=False):
 
     return f"{default_intro} {cta_outro}"
 
-# ================= [NEW: 자연스러운 라디오 DJ 톤 TTS 음성 엔진] =================
+# ================= [LOCKED: 자연스러운 라디오 DJ 톤 TTS 음성 엔진] =================
 async def _async_generate_voice(text, filename="voice.mp3"):
-    # 차분하고 따뜻한 성우 톤(HyunSuNeural) 우선 적용, 실패 시 SunHiNeural 자연 톤 폴백
     try:
         communicate = edge_tts.Communicate(text, "ko-KR-HyunSuNeural", rate="+2%", pitch="-2Hz")
         await communicate.save(filename)
@@ -210,8 +209,8 @@ async def _async_generate_voice(text, filename="voice.mp3"):
 def generate_voice_sync(text, filename="voice.mp3"):
     asyncio.run(_async_generate_voice(text, filename))
 
-# ================= [LOCKED: 2중 음원 추출 + CRLF 쿠키 정규화 안전장치] =================
-def fetch_song_highlight_audio(singer, song, out_filename="bgm_raw.m4a"):
+# ================= [HARDENED: 시트 M열 직통 링크 우선 + 2중 클라이언트 음원 추출] =================
+def fetch_song_highlight_audio(singer, song, yt_direct_url="", out_filename="bgm_raw.m4a"):
     if os.path.exists(out_filename):
         os.remove(out_filename)
 
@@ -229,7 +228,12 @@ def fetch_song_highlight_audio(singer, song, out_filename="bgm_raw.m4a"):
         except Exception as ce:
             print(f"      [안내] 쿠키 파일 기록 건너뜀: {ce}")
 
-    query = f"ytsearch1:{singer} {song} 가사 audio"
+    # 시트 M열에 검증된 유튜브 링크가 있으면 검색 없이 직통 추출, 없으면 검색 폴백
+    clean_yt_url = yt_direct_url.strip() if isinstance(yt_direct_url, str) else ""
+    if clean_yt_url.startswith("http") and ("youtube.com" in clean_yt_url or "youtu.be" in clean_yt_url):
+        target_queries = [clean_yt_url, f"ytsearch1:{singer} {song} 가사 audio"]
+    else:
+        target_queries = [f"ytsearch1:{singer} {song} 가사 audio"]
 
     strategies = []
     if has_cookie:
@@ -260,18 +264,20 @@ def fetch_song_highlight_audio(singer, song, out_filename="bgm_raw.m4a"):
     })
 
     try:
-        for st in strategies:
-            if os.path.exists(out_filename):
-                os.remove(out_filename)
-            try:
-                print(f"      └ 음원 추출 시도: {st['label']}")
-                with yt_dlp.YoutubeDL(st["opts"]) as ydl:
-                    ydl.extract_info(query, download=True)
-                    if os.path.exists(out_filename) and os.path.getsize(out_filename) > 10000:
-                        print(f"      └ 음원 추출 성공! ({st['label']})")
-                        return out_filename
-            except Exception as e:
-                print(f"      [안내] {st['label']} 건너뜀 -> 다음 방식 시도 ({str(e)[:80]})")
+        for q_target in target_queries:
+            source_tag = "시트 M열 직통 링크" if q_target.startswith("http") else "유튜브 자동 검색"
+            for st in strategies:
+                if os.path.exists(out_filename):
+                    os.remove(out_filename)
+                try:
+                    print(f"      └ 음원 추출 시도 ({source_tag} / {st['label']})")
+                    with yt_dlp.YoutubeDL(st["opts"]) as ydl:
+                        ydl.extract_info(q_target, download=True)
+                        if os.path.exists(out_filename) and os.path.getsize(out_filename) > 10000:
+                            print(f"      └ 음원 추출 성공! ({source_tag} / {st['label']})")
+                            return out_filename
+                except Exception as e:
+                    print(f"      [안내] {st['label']} 건너뜀 -> 다음 방식 시도 ({str(e)[:80]})")
     finally:
         if os.path.exists(cookie_path):
             try:
@@ -294,8 +300,8 @@ def get_font_safe(size):
                 pass
     return ImageFont.load_default()
 
-# ================= [UPDATED: 앨범 임팩트 멘트 + 자연 음성 + 25초 하이라이트 쇼츠 엔진] =================
-def create_optimized_shorts(singer, song, melon_url, content_html, tab_name="최신곡", output_path="shorts.mp4"):
+# ================= [LOCKED: 앨범 임팩트 멘트 + 배경음 덕킹(22%->100%) + 25초 쇼츠 엔진] =================
+def create_optimized_shorts(singer, song, melon_url, content_html, yt_direct_url="", tab_name="최신곡", output_path="shorts.mp4"):
     is_popular = (tab_name == "인기곡")
     badge_text = "시청자 추천 트로트 명곡" if is_popular else "오늘의 명품 트로트 신곡"
 
@@ -309,8 +315,8 @@ def create_optimized_shorts(singer, song, melon_url, content_html, tab_name="최
     voice_dur = round(max(float(raw_voice_clip.duration) - 0.08, 3.0), 2)
     voice_clip = safe_subclip(raw_voice_clip, 0, voice_dur)
 
-    print("   [2/4] 하이라이트 음원 추출 및 오디오 믹싱 중...")
-    bgm_raw_path = fetch_song_highlight_audio(singer, song, "bgm_raw.m4a")
+    print("   [2/4] 신곡 하이라이트 음원 추출 및 오디오 믹싱 중...")
+    bgm_raw_path = fetch_song_highlight_audio(singer, song, yt_direct_url, "bgm_raw.m4a")
     bgm_clip_full = None
 
     if bgm_raw_path:
@@ -320,7 +326,6 @@ def create_optimized_shorts(singer, song, melon_url, content_html, tab_name="최
             if raw_bgm_dur <= voice_dur + 1.5:
                 raise ValueError(f"추출된 음원 길이가 너무 짧음 ({raw_bgm_dur:.1f}초)")
 
-            # 멘트 종료 후에도 가수 원곡 하이라이트를 약 18초 이상 감상하도록 총 25~26초 구성
             target_total = max(voice_dur + 18.0, 25.0)
 
             if raw_bgm_dur > target_total + 45:
@@ -335,7 +340,7 @@ def create_optimized_shorts(singer, song, melon_url, content_html, tab_name="최
             duration = round(end_sec - start_sec, 2)
 
             if duration > voice_dur + 1.0:
-                bgm_part1 = safe_volumex(safe_subclip(bgm_sub, 0, voice_dur), 0.20)
+                bgm_part1 = safe_volumex(safe_subclip(bgm_sub, 0, voice_dur), 0.22)
                 bgm_part2 = safe_volumex(safe_subclip(bgm_sub, voice_dur, duration), 1.00)
                 bgm_ducked = concatenate_audioclips([bgm_part1, bgm_part2])
             else:
@@ -522,9 +527,10 @@ def run_pipeline():
             singer = rows[idx][2].strip() if len(rows[idx]) > 2 else ""
             song = rows[idx][3].strip() if len(rows[idx]) > 3 else ""
             melon_url = rows[idx][4].strip() if len(rows[idx]) > 4 else ""
-            status = rows[idx][7].strip() if len(rows[idx]) > 7 else ""
-            shorts_id = rows[idx][15].strip() if len(rows[idx]) > 15 else ""
             content_html = rows[idx][6] if len(rows[idx]) > 6 else ""
+            status = rows[idx][7].strip() if len(rows[idx]) > 7 else ""
+            yt_direct_url = rows[idx][12].strip() if len(rows[idx]) > 12 else ""
+            shorts_id = rows[idx][15].strip() if len(rows[idx]) > 15 else ""
 
             if status == "Published" and not shorts_id:
                 if (singer, song) in already_processed_songs:
@@ -539,7 +545,7 @@ def run_pipeline():
                 video_filename = f"Shorts_{new_id}_{clean_singer}_{clean_song}.mp4"
 
                 try:
-                    rendered = create_optimized_shorts(singer, song, melon_url, content_html, tab_name, video_filename)
+                    rendered = create_optimized_shorts(singer, song, melon_url, content_html, yt_direct_url, tab_name, video_filename)
                     print(f"   [전송] 대표님 Google Drive(Shorts_Auto) 및 [{tab_name}] 시트 동기화 요청 중...")
                     drive_id = upload_via_apps_script(rendered, video_filename, row_num, new_id, tab_name)
 
