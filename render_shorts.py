@@ -148,17 +148,10 @@ def get_best_album_art(singer, song, melon_song_url, content_html):
 
     return None
 
-# ================= [LOCKED: html.unescape 적용 앨범 임팩트 소개 추출기] =================
-def build_impact_narration(singer, song, content_html, is_popular=False):
-    default_intro = (
-        f"시청자 여러분이 사랑하는 트로트 명곡! 가수 {singer}의 {song}입니다."
-        if is_popular else
-        f"오늘 전해드릴 명품 트로트 신곡! 가수 {singer}의 {song}입니다."
-    )
-    cta_outro = "매일 새로운 트로트 명곡 소식을 받으시려면 지금 구독을 눌러주세요."
-
+# ================= [IMPROVED: 블로그 인사말 제외 + 순수 곡 임팩트 문장 추출] =================
+def extract_impact_sentence(content_html):
     if not content_html or not isinstance(content_html, str):
-        return f"{default_intro} {cta_outro}"
+        return ""
 
     cleaned = re.sub(r'<(style|script)[^>]*>.*?</\1>', ' ', content_html, flags=re.DOTALL | re.IGNORECASE)
     cleaned = re.sub(r'<br\s*/?>|</p>|</div>|</li>|</h[1-6]>', '\n', cleaned, flags=re.IGNORECASE)
@@ -169,7 +162,8 @@ def build_impact_narration(singer, song, content_html, is_popular=False):
     ignore_words = [
         "작사", "작곡", "편곡", "발매일", "앨범명", "가사", "듣기", "티스토리",
         "목차", "프로필", "크레딧", "클릭", "바로가기", "출처", "유튜브", "멜론",
-        "추천곡", "모음", "http", "www.", "copyright", "무단전재"
+        "추천곡", "모음", "http", "www.", "copyright", "무단전재",
+        "공감", "마음에 드셨다면", "하단", "댓글", "좋아요", "이웃추가", "구독하기", "감사합니다"
     ]
 
     best_sentence = ""
@@ -178,7 +172,7 @@ def build_impact_narration(singer, song, content_html, is_popular=False):
             continue
         for sent in re.split(r'(?<=[.!?])\s+', line):
             s = sent.strip()
-            if 18 <= len(s) <= 72 and not any(w in s.lower() for w in ignore_words):
+            if 18 <= len(s) <= 68 and not any(w in s.lower() for w in ignore_words):
                 if s.endswith(("다.", "요.", "니다.", "세요.", "죠.", "네요.")):
                     best_sentence = s
                     break
@@ -187,12 +181,21 @@ def build_impact_narration(singer, song, content_html, is_popular=False):
         if best_sentence and best_sentence.endswith(("다.", "요.", "니다.", "세요.")):
             break
 
-    if best_sentence:
-        if not best_sentence.endswith((".", "!", "?")):
-            best_sentence += "."
-        return f"가수 {singer}의 {song}! {best_sentence} {cta_outro}"
+    if best_sentence and not best_sentence.endswith((".", "!", "?")):
+        best_sentence += "."
+    return best_sentence
 
-    return f"{default_intro} {cta_outro}"
+def build_impact_narration(singer, song, content_html, is_popular=False):
+    default_intro = (
+        f"시청자 여러분이 사랑하는 트로트 명곡! 가수 {singer}의 {song}입니다."
+        if is_popular else
+        f"오늘 전해드릴 명품 트로트 신곡! 가수 {singer}의 {song}입니다."
+    )
+    cta_outro = "매일 새로운 트로트 명곡 소식을 받으시려면 지금 구독을 눌러주세요."
+    impact = extract_impact_sentence(content_html)
+    if impact:
+        return f"가수 {singer}의 {song}! {impact} {cta_outro}", impact
+    return f"{default_intro} {cta_outro}", ""
 
 # ================= [LOCKED: 자연스러운 라디오 DJ 톤 TTS 음성 엔진] =================
 async def _async_generate_voice(text, filename="voice.mp3"):
@@ -209,7 +212,7 @@ async def _async_generate_voice(text, filename="voice.mp3"):
 def generate_voice_sync(text, filename="voice.mp3"):
     asyncio.run(_async_generate_voice(text, filename))
 
-# ================= [LOCKED: 시트 M열 직통 링크 우선 + 2중 클라이언트 음원 추출] =================
+# ================= [FIXED: 포맷 제한 해제("bestaudio/best")로 원곡 음원 100% 추출] =================
 def fetch_song_highlight_audio(singer, song, yt_direct_url="", out_filename="bgm_raw.m4a"):
     if os.path.exists(out_filename):
         os.remove(out_filename)
@@ -234,47 +237,50 @@ def fetch_song_highlight_audio(singer, song, yt_direct_url="", out_filename="bgm
     else:
         target_queries = [f"ytsearch1:{singer} {song} 가사 audio"]
 
+    # ext=m4a 강제 제한을 풀어 모든 가용 스트림에서 FFmpeg로 오디오만 추출
+    base_ydl_opts = {
+        "format": "bestaudio/best",
+        "outtmpl": "bgm_temp.%(ext)s",
+        "quiet": True,
+        "no_warnings": True,
+        "noplaylist": True,
+        "socket_timeout": 15,
+        "postprocessors": [{
+            "key": "FFmpegExtractAudio",
+            "preferredcodec": "m4a",
+            "preferredquality": "128",
+        }],
+    }
+
     strategies = []
     if has_cookie:
-        strategies.append({
-            "label": "1차: 보조 계정 쿠키(YT_COOKIES) + tv_embedded/mweb",
-            "opts": {
-                "format": "bestaudio[ext=m4a]/bestaudio/best",
-                "outtmpl": out_filename,
-                "quiet": True,
-                "no_warnings": True,
-                "noplaylist": True,
-                "socket_timeout": 15,
-                "cookiefile": cookie_path,
-                "extractor_args": {"youtube": {"player_client": ["tv_embedded", "mweb", "web"]}},
-            }
-        })
-    strategies.append({
-        "label": "2차: 모바일 클라이언트(ios/android) 무쿠키 우회",
-        "opts": {
-            "format": "bestaudio[ext=m4a]/bestaudio/best",
-            "outtmpl": out_filename,
-            "quiet": True,
-            "no_warnings": True,
-            "noplaylist": True,
-            "socket_timeout": 15,
-            "extractor_args": {"youtube": {"player_client": ["ios", "android", "tv_embedded"]}},
-        }
-    })
+        opts1 = dict(base_ydl_opts)
+        opts1["cookiefile"] = cookie_path
+        opts1["extractor_args"] = {"youtube": {"player_client": ["tv_embedded", "web", "mweb"]}}
+        strategies.append({"label": "1차: 보조 계정 쿠키(YT_COOKIES) 통합 스트림 추출", "opts": opts1})
+
+    opts2 = dict(base_ydl_opts)
+    opts2["extractor_args"] = {"youtube": {"player_client": ["ios", "android", "tv_embedded"]}}
+    strategies.append({"label": "2차: 모바일 클라이언트(ios/android) 우회 추출", "opts": opts2})
 
     try:
         for q_target in target_queries:
             source_tag = "시트 M열 직통 링크" if q_target.startswith("http") else "유튜브 자동 검색"
             for st in strategies:
-                if os.path.exists(out_filename):
-                    os.remove(out_filename)
+                for f in os.listdir("."):
+                    if f.startswith("bgm_temp.") or f == out_filename:
+                        try:
+                            os.remove(f)
+                        except Exception:
+                            pass
                 try:
                     print(f"      └ 음원 추출 시도 ({source_tag} / {st['label']})")
                     with yt_dlp.YoutubeDL(st["opts"]) as ydl:
                         ydl.extract_info(q_target, download=True)
-                        if os.path.exists(out_filename) and os.path.getsize(out_filename) > 10000:
-                            print(f"      └ 음원 추출 성공! ({source_tag} / {st['label']})")
-                            return out_filename
+                    if os.path.exists("bgm_temp.m4a") and os.path.getsize("bgm_temp.m4a") > 10000:
+                        os.replace("bgm_temp.m4a", out_filename)
+                        print(f"      └ 음원 추출 성공! ({source_tag} / {st['label']})")
+                        return out_filename
                 except Exception as e:
                     print(f"      [안내] {st['label']} 건너뜀 -> 다음 방식 시도 ({str(e)[:80]})")
     finally:
@@ -283,6 +289,12 @@ def fetch_song_highlight_audio(singer, song, yt_direct_url="", out_filename="bgm
                 os.remove(cookie_path)
             except Exception:
                 pass
+        for f in os.listdir("."):
+            if f.startswith("bgm_temp."):
+                try:
+                    os.remove(f)
+                except Exception:
+                    pass
     return None
 
 def get_font_safe(size):
@@ -299,13 +311,29 @@ def get_font_safe(size):
                 pass
     return ImageFont.load_default()
 
-# ================= [HARDENED: EOF 동기화 고정 + 배경음 덕킹(22%->100%) + 25초 쇼츠 엔진] =================
+def wrap_korean_text(text, max_chars=22):
+    if not text:
+        return []
+    words = text.split(" ")
+    lines, cur = [], ""
+    for w in words:
+        if len(cur) + len(w) + (1 if cur else 0) <= max_chars:
+            cur = f"{cur} {w}".strip()
+        else:
+            if cur:
+                lines.append(cur)
+            cur = w
+    if cur:
+        lines.append(cur)
+    return lines[:2]
+
+# ================= [UPGRADED: 구독 전환 강화 UI + 임팩트 자막 카드 + 25초 원곡 쇼츠] =================
 def create_optimized_shorts(singer, song, melon_url, content_html, yt_direct_url="", tab_name="최신곡", output_path="shorts.mp4"):
     is_popular = (tab_name == "인기곡")
     badge_text = "시청자 추천 트로트 명곡" if is_popular else "오늘의 명품 트로트 신곡"
 
     print(f"   [1/4] 자연스러운 성우 톤 & 앨범 임팩트 소개 음성 생성 중 ({tab_name} 모드)...")
-    script_text = build_impact_narration(singer, song, content_html, is_popular)
+    script_text, impact_caption = build_impact_narration(singer, song, content_html, is_popular)
     print(f"      └ 생성된 멘트: {script_text}")
     audio_path = "voice.mp3"
     generate_voice_sync(script_text, audio_path)
@@ -361,7 +389,7 @@ def create_optimized_shorts(singer, song, melon_url, content_html, yt_direct_url
         final_audio = safe_duration(final_audio, duration)
         print(f"      └ 기본 나레이션 단독 모드 적용 ({duration:.1f}초)")
 
-    print("   [3/4] 3중 백업 앨범 자켓 확보 및 줌인(Zoom-in) 모션 레이어 구성 중...")
+    print("   [3/4] 3중 백업 앨범 자켓 확보 및 구독 전환 특화 레이어 구성 중...")
     jacket_img = get_best_album_art(singer, song, melon_url, content_html)
 
     if jacket_img is None:
@@ -377,27 +405,38 @@ def create_optimized_shorts(singer, song, melon_url, content_html, yt_direct_url
     jacket_img = ImageOps.fit(jacket_img, (720, 720), Image.Resampling.LANCZOS)
 
     bg_img = jacket_img.resize((1080, 1920), Image.Resampling.BICUBIC).filter(ImageFilter.GaussianBlur(radius=45))
-    overlay = Image.new("RGBA", (1080, 1920), (0, 0, 0, 145))
+    overlay = Image.new("RGBA", (1080, 1920), (0, 0, 0, 152))
     bg_img = Image.alpha_composite(bg_img.convert("RGBA"), overlay).convert("RGB")
 
     draw = ImageDraw.Draw(bg_img)
-    f_badge = get_font_safe(42)
+    f_badge = get_font_safe(40)
     f_bold = get_font_safe(62)
-    f_singer = get_font_safe(54)
-    f_cta_main = get_font_safe(40)
-    f_cta_sub = get_font_safe(35)
+    f_singer = get_font_safe(52)
+    f_caption = get_font_safe(36)
+    f_cta_main = get_font_safe(42)
+    f_cta_sub = get_font_safe(34)
 
     badge_fill = (185, 28, 28) if is_popular else (217, 119, 6)
-    draw.rounded_rectangle([220, 195, 860, 265], radius=35, fill=badge_fill)
-    draw.text((540, 230), badge_text, font=f_badge, fill=(255, 255, 255), anchor="mm")
+    draw.rounded_rectangle([200, 175, 880, 245], radius=35, fill=badge_fill)
+    draw.text((540, 210), badge_text, font=f_badge, fill=(255, 255, 255), anchor="mm")
 
     display_song = song if len(song) <= 15 else song[:14] + "..."
-    draw.text((540, 345), display_song, font=f_bold, fill=(255, 255, 255), anchor="mm")
-    draw.text((540, 1255), f"가수 : {singer}", font=f_singer, fill=(255, 215, 0), anchor="mm")
+    draw.text((540, 320), display_song, font=f_bold, fill=(255, 255, 255), anchor="mm")
+    draw.text((540, 1215), f"가수 : {singer}", font=f_singer, fill=(255, 215, 0), anchor="mm")
 
-    draw.rounded_rectangle([(70, 1525), (1010, 1720)], radius=24, fill=(215, 38, 56))
-    draw.text((540, 1585), "▶ 매일 트로트 명곡 알림 → 오른쪽 [구독] 꾹!", font=f_cta_main, fill=(255, 235, 59), anchor="mm")
-    draw.text((540, 1660), "◀◀ 전곡·가사는 왼쪽 아래 [채널 사진] 누르고 상단 링크!", font=f_cta_sub, fill=(255, 255, 255), anchor="mm")
+    # 곡 핵심 임팩트 한 줄 자막 카드
+    caption_lines = wrap_korean_text(impact_caption, max_chars=23) if impact_caption else [f"매일 엄선한 {singer} 명품 트로트 감상"]
+    draw.rounded_rectangle([(95, 1275), (985, 1395)], radius=20, fill=(20, 28, 48), outline=(255, 215, 0), width=2)
+    if len(caption_lines) == 1:
+        draw.text((540, 1335), caption_lines[0], font=f_caption, fill=(241, 245, 249), anchor="mm")
+    else:
+        draw.text((540, 1312), caption_lines[0], font=f_caption, fill=(241, 245, 249), anchor="mm")
+        draw.text((540, 1358), caption_lines[1], font=f_caption, fill=(241, 245, 249), anchor="mm")
+
+    # 구독 유도 강조 배너
+    draw.rounded_rectangle([(65, 1515), (1015, 1715)], radius=26, fill=(215, 38, 56), outline=(255, 235, 59), width=3)
+    draw.text((540, 1578), "▶ 매일 트로트 신곡 배달 → 오른쪽 [구독] 꾹!", font=f_cta_main, fill=(255, 235, 59), anchor="mm")
+    draw.text((540, 1655), "◀◀ 전체 가사·풀영상은 왼쪽 아래 [채널 사진] 클릭!", font=f_cta_sub, fill=(255, 255, 255), anchor="mm")
 
     bg_path = "bg_frame.png"
     bg_img.save(bg_path, "PNG")
@@ -412,7 +451,7 @@ def create_optimized_shorts(singer, song, melon_url, content_html, yt_direct_url
 
     raw_card_clip = safe_duration(ImageClip(card_path), duration)
     base_size = 736.0
-    center_y = 455.0 + (base_size / 2.0)
+    center_y = 425.0 + (base_size / 2.0)
 
     zoomed_card_clip = safe_resize(raw_card_clip, lambda t: 1.0 + 0.08 * (t / max(duration, 0.1)))
     zoomed_card_clip = safe_position(
