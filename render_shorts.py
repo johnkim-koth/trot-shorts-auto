@@ -1,5 +1,6 @@
 import os
 import re
+import html
 import json
 import base64
 import asyncio
@@ -147,7 +148,7 @@ def get_best_album_art(singer, song, melon_song_url, content_html):
 
     return None
 
-# ================= [LOCKED: 시트 G열 본문에서 앨범 임팩트 한 줄 소개 자동 추출기] =================
+# ================= [LOCKED: html.unescape 적용 앨범 임팩트 소개 추출기] =================
 def build_impact_narration(singer, song, content_html, is_popular=False):
     default_intro = (
         f"시청자 여러분이 사랑하는 트로트 명곡! 가수 {singer}의 {song}입니다."
@@ -162,8 +163,7 @@ def build_impact_narration(singer, song, content_html, is_popular=False):
     cleaned = re.sub(r'<(style|script)[^>]*>.*?</\1>', ' ', content_html, flags=re.DOTALL | re.IGNORECASE)
     cleaned = re.sub(r'<br\s*/?>|</p>|</div>|</li>|</h[1-6]>', '\n', cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r'<[^>]+>', ' ', cleaned)
-    for ent, ch in [(" ", " "), ("&", "&"), (""", '"'), ("<", "<"), (">", ">"), ("'", "'")]:
-        cleaned = cleaned.replace(ent, ch)
+    cleaned = html.unescape(cleaned).replace("\xa0", " ")
 
     lines = [re.sub(r'\s+', ' ', line).strip() for line in cleaned.splitlines()]
     ignore_words = [
@@ -209,7 +209,7 @@ async def _async_generate_voice(text, filename="voice.mp3"):
 def generate_voice_sync(text, filename="voice.mp3"):
     asyncio.run(_async_generate_voice(text, filename))
 
-# ================= [HARDENED: 시트 M열 직통 링크 우선 + 2중 클라이언트 음원 추출] =================
+# ================= [LOCKED: 시트 M열 직통 링크 우선 + 2중 클라이언트 음원 추출] =================
 def fetch_song_highlight_audio(singer, song, yt_direct_url="", out_filename="bgm_raw.m4a"):
     if os.path.exists(out_filename):
         os.remove(out_filename)
@@ -228,7 +228,6 @@ def fetch_song_highlight_audio(singer, song, yt_direct_url="", out_filename="bgm
         except Exception as ce:
             print(f"      [안내] 쿠키 파일 기록 건너뜀: {ce}")
 
-    # 시트 M열에 검증된 유튜브 링크가 있으면 검색 없이 직통 추출, 없으면 검색 폴백
     clean_yt_url = yt_direct_url.strip() if isinstance(yt_direct_url, str) else ""
     if clean_yt_url.startswith("http") and ("youtube.com" in clean_yt_url or "youtu.be" in clean_yt_url):
         target_queries = [clean_yt_url, f"ytsearch1:{singer} {song} 가사 audio"]
@@ -300,7 +299,7 @@ def get_font_safe(size):
                 pass
     return ImageFont.load_default()
 
-# ================= [LOCKED: 앨범 임팩트 멘트 + 배경음 덕킹(22%->100%) + 25초 쇼츠 엔진] =================
+# ================= [HARDENED: EOF 동기화 고정 + 배경음 덕킹(22%->100%) + 25초 쇼츠 엔진] =================
 def create_optimized_shorts(singer, song, melon_url, content_html, yt_direct_url="", tab_name="최신곡", output_path="shorts.mp4"):
     is_popular = (tab_name == "인기곡")
     badge_text = "시청자 추천 트로트 명곡" if is_popular else "오늘의 명품 트로트 신곡"
@@ -312,7 +311,7 @@ def create_optimized_shorts(singer, song, melon_url, content_html, yt_direct_url
     generate_voice_sync(script_text, audio_path)
 
     raw_voice_clip = AudioFileClip(audio_path)
-    voice_dur = round(max(float(raw_voice_clip.duration) - 0.08, 3.0), 2)
+    voice_dur = round(max(float(raw_voice_clip.duration) - 0.12, 3.0), 2)
     voice_clip = safe_subclip(raw_voice_clip, 0, voice_dur)
 
     print("   [2/4] 신곡 하이라이트 음원 추출 및 오디오 믹싱 중...")
@@ -335,7 +334,7 @@ def create_optimized_shorts(singer, song, melon_url, content_html, yt_direct_url
             else:
                 start_sec = 0.0
 
-            end_sec = round(min(start_sec + target_total, raw_bgm_dur - 0.15), 2)
+            end_sec = round(min(start_sec + target_total, raw_bgm_dur - 0.25), 2)
             bgm_sub = safe_subclip(bgm_clip_full, start_sec, end_sec)
             duration = round(end_sec - start_sec, 2)
 
@@ -347,6 +346,7 @@ def create_optimized_shorts(singer, song, melon_url, content_html, yt_direct_url
                 bgm_ducked = safe_volumex(bgm_sub, 0.35)
 
             bgm_ducked = safe_fadeout(bgm_ducked, 1.5)
+            bgm_ducked = safe_duration(bgm_ducked, duration)
             final_audio = CompositeAudioClip([bgm_ducked, safe_start(voice_clip, 0)])
             final_audio = safe_duration(final_audio, duration)
             print(f"      └ 오디오 믹싱 성공! (총 {duration:.1f}초: 멘트 {voice_dur:.1f}초 + 하이라이트 {duration - voice_dur:.1f}초)")
@@ -453,7 +453,7 @@ def create_optimized_shorts(singer, song, melon_url, content_html, yt_direct_url
 
     return output_path
 
-# ================= [LOCKED: Apps Script 웹훅 업로드 + 용량 가드] =================
+# ================= [LOCKED: Apps Script 웹훅 업로드 + 용량/JSON 가드] =================
 def upload_via_apps_script(file_path, file_name, row_num, new_id, sheet_name="최신곡"):
     file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
     print(f"   [용량 검증] 생성된 MP4 크기: {file_size_mb:.2f} MB")
@@ -475,7 +475,11 @@ def upload_via_apps_script(file_path, file_name, row_num, new_id, sheet_name="�
     if resp.status_code != 200:
         raise RuntimeError(f"Apps Script HTTP 오류: {resp.status_code} / {resp.text[:200]}")
 
-    result = resp.json()
+    try:
+        result = resp.json()
+    except Exception:
+        raise RuntimeError(f"Apps Script JSON 파싱 실패 (권한/배포 URL 확인 필요): {resp.text[:200]}")
+
     if result.get("status") != "success":
         raise RuntimeError(f"Apps Script 내부 처리 오류: {result.get('message') or result.get('error')}")
     return result.get("fileId")
@@ -533,6 +537,8 @@ def run_pipeline():
             shorts_id = rows[idx][15].strip() if len(rows[idx]) > 15 else ""
 
             if status == "Published" and not shorts_id:
+                if not singer or not song:
+                    continue
                 if (singer, song) in already_processed_songs:
                     print(f"[중복 스킵] [{tab_name}] {row_num}행: {singer} - {song} (이미 발행된 곡)")
                     continue
@@ -540,8 +546,8 @@ def run_pipeline():
                 processed = True
                 print(f"\n[대상 포착] [{tab_name}] {row_num}행: {singer} - {song} (발행 ID: {new_id})")
 
-                clean_singer = "".join(c for c in singer if c.isalnum() or c in (" ", "_")).strip()
-                clean_song = "".join(c for c in song if c.isalnum() or c in (" ", "_")).strip()
+                clean_singer = "".join(c for c in singer if c.isalnum() or c in (" ", "_")).strip() or "Artist"
+                clean_song = "".join(c for c in song if c.isalnum() or c in (" ", "_")).strip() or "Track"
                 video_filename = f"Shorts_{new_id}_{clean_singer}_{clean_song}.mp4"
 
                 try:
@@ -556,6 +562,8 @@ def run_pipeline():
 
                 except Exception as e:
                     print(f"[전송/렌더링 실패] {str(e)}")
+                    if os.path.exists(video_filename):
+                        os.remove(video_filename)
                     return
 
     if not processed:
