@@ -148,7 +148,7 @@ def get_best_album_art(singer, song, melon_song_url, content_html):
 
     return None
 
-# ================= [UPGRADED: 블로그 인사말 제외 + 순수 곡 임팩트 문장 추출] =================
+# ================= [LOCKED: 블로그 인사말 제외 + 순수 곡 임팩트 문장 추출] =================
 def extract_impact_sentence(content_html):
     if not content_html or not isinstance(content_html, str):
         return ""
@@ -212,7 +212,7 @@ async def _async_generate_voice(text, filename="voice.mp3"):
 def generate_voice_sync(text, filename="voice.mp3"):
     asyncio.run(_async_generate_voice(text, filename))
 
-# ================= [FIXED: 포맷 제한 해제("bestaudio/best")로 원곡 음원 100% 추출] =================
+# ================= [UPDATED: 최신 yt-dlp 기본 클라이언트 + 쿠키/무쿠키 음원 추출] =================
 def fetch_song_highlight_audio(singer, song, yt_direct_url="", out_filename="bgm_raw.m4a"):
     if os.path.exists(out_filename):
         os.remove(out_filename)
@@ -237,6 +237,7 @@ def fetch_song_highlight_audio(singer, song, yt_direct_url="", out_filename="bgm
     else:
         target_queries = [f"ytsearch1:{singer} {song} 가사 audio"]
 
+    # 최신 yt-dlp 기본 클라이언트 세트를 유지해 클라이언트 고정으로 인한 포맷 누락 방지
     base_ydl_opts = {
         "format": "bestaudio/best",
         "outtmpl": "bgm_temp.%(ext)s",
@@ -255,12 +256,10 @@ def fetch_song_highlight_audio(singer, song, yt_direct_url="", out_filename="bgm
     if has_cookie:
         opts1 = dict(base_ydl_opts)
         opts1["cookiefile"] = cookie_path
-        opts1["extractor_args"] = {"youtube": {"player_client": ["tv_embedded", "web", "mweb"]}}
-        strategies.append({"label": "1차: 보조 계정 쿠키(YT_COOKIES) 통합 스트림 추출", "opts": opts1})
+        strategies.append({"label": "1차: 보조 계정 쿠키(YT_COOKIES) + 최신 기본 클라이언트", "opts": opts1})
 
     opts2 = dict(base_ydl_opts)
-    opts2["extractor_args"] = {"youtube": {"player_client": ["ios", "android", "tv_embedded"]}}
-    strategies.append({"label": "2차: 모바일 클라이언트(ios/android) 우회 추출", "opts": opts2})
+    strategies.append({"label": "2차: 최신 기본 클라이언트(무쿠키) 추출", "opts": opts2})
 
     try:
         for q_target in target_queries:
@@ -326,7 +325,7 @@ def wrap_korean_text(text, max_chars=22):
         lines.append(cur)
     return lines[:2]
 
-# ================= [UPGRADED: 임팩트 자막 카드 + 엔딩 3.5초 구독 강조 배너 + 25초 원곡 쇼츠] =================
+# ================= [UPGRADED: 음원 유무에 따른 스마트 길이 조절 (원곡有 25s / 음원無 간결 길이)] =================
 def create_optimized_shorts(singer, song, melon_url, content_html, yt_direct_url="", tab_name="최신곡", output_path="shorts.mp4"):
     is_popular = (tab_name == "인기곡")
     badge_text = "시청자 추천 트로트 명곡" if is_popular else "오늘의 명품 트로트 신곡"
@@ -344,6 +343,7 @@ def create_optimized_shorts(singer, song, melon_url, content_html, yt_direct_url
     print("   [2/4] 신곡 하이라이트 음원 추출 및 오디오 믹싱 중...")
     bgm_raw_path = fetch_song_highlight_audio(singer, song, yt_direct_url, "bgm_raw.m4a")
     bgm_clip_full = None
+    has_bgm = False
 
     if bgm_raw_path:
         try:
@@ -376,19 +376,20 @@ def create_optimized_shorts(singer, song, melon_url, content_html, yt_direct_url
             bgm_ducked = safe_duration(bgm_ducked, duration)
             final_audio = CompositeAudioClip([bgm_ducked, safe_start(voice_clip, 0)])
             final_audio = safe_duration(final_audio, duration)
+            has_bgm = True
             print(f"      └ 오디오 믹싱 성공! (총 {duration:.1f}초: 멘트 {voice_dur:.1f}초 + 하이라이트 {duration - voice_dur:.1f}초)")
         except Exception as mix_err:
-            print(f"      [안내] 오디오 믹싱 예외 발생, 기본 음성으로 안전 전환: {mix_err}")
-            duration = voice_dur
-            final_audio = CompositeAudioClip([safe_start(voice_clip, 0)])
-            final_audio = safe_duration(final_audio, duration)
-    else:
-        duration = voice_dur
+            print(f"      [안내] 오디오 믹싱 예외 발생, 간결 나레이션 모드로 안전 전환: {mix_err}")
+            has_bgm = False
+
+    if not has_bgm:
+        # 음원 없이 길어지는 지루함 방지: 나레이션 길이에 맞춘 컴팩트 쇼츠(약 8~13초)로 유지
+        duration = round(max(voice_dur, 7.5), 2)
         final_audio = CompositeAudioClip([safe_start(voice_clip, 0)])
         final_audio = safe_duration(final_audio, duration)
-        print(f"      └ 기본 나레이션 단독 모드 적용 ({duration:.1f}초)")
+        print(f"      └ 음원 미추출 → 지루함 방지 컴팩트 나레이션 모드 적용 ({duration:.1f}초)")
 
-    print("   [3/4] 3중 백업 앨범 자켓 확보 및 구독 전환 레이어(임팩트 자막 + 엔딩 배너) 구성 중...")
+    print("   [3/4] 3중 백업 앨범 자켓 확보 및 구독 전환 레이어 구성 중...")
     jacket_img = get_best_album_art(singer, song, melon_url, content_html)
 
     if jacket_img is None:
@@ -423,7 +424,6 @@ def create_optimized_shorts(singer, song, melon_url, content_html, yt_direct_url
     draw.text((540, 320), display_song, font=f_bold, fill=(255, 255, 255), anchor="mm")
     draw.text((540, 1215), f"가수 : {singer}", font=f_singer, fill=(255, 215, 0), anchor="mm")
 
-    # 곡 핵심 임팩트 한 줄 자막 카드 (초반 시선 고정용)
     caption_lines = wrap_korean_text(impact_caption, max_chars=23) if impact_caption else [f"매일 엄선한 {singer} 명품 트로트 감상"]
     draw.rounded_rectangle([(95, 1275), (985, 1395)], radius=20, fill=(20, 28, 48), outline=(255, 215, 0), width=2)
     if len(caption_lines) == 1:
@@ -432,7 +432,6 @@ def create_optimized_shorts(singer, song, melon_url, content_html, yt_direct_url
         draw.text((540, 1312), caption_lines[0], font=f_caption, fill=(241, 245, 249), anchor="mm")
         draw.text((540, 1358), caption_lines[1], font=f_caption, fill=(241, 245, 249), anchor="mm")
 
-    # 기본 하단 구독 유도 배너
     draw.rounded_rectangle([(65, 1515), (1015, 1715)], radius=26, fill=(215, 38, 56), outline=(255, 235, 59), width=3)
     draw.text((540, 1578), "▶ 매일 트로트 신곡 배달 → 오른쪽 [구독] 꾹!", font=f_cta_main, fill=(255, 235, 59), anchor="mm")
     draw.text((540, 1655), "◀◀ 전체 가사·풀영상은 왼쪽 아래 [채널 사진] 클릭!", font=f_cta_sub, fill=(255, 255, 255), anchor="mm")
@@ -440,7 +439,6 @@ def create_optimized_shorts(singer, song, melon_url, content_html, yt_direct_url
     bg_path = "bg_frame.png"
     bg_img.save(bg_path, "PNG")
 
-    # 엔딩 마지막 3.5초 전용 금색 반전 구독 강조 배너 이미지 생성 (950x200)
     ending_banner = Image.new("RGB", (950, 200), (245, 158, 11))
     d_end = ImageDraw.Draw(ending_banner)
     d_end.rounded_rectangle([(0, 0), (949, 199)], radius=26, fill=(245, 158, 11), outline=(255, 255, 255), width=4)
@@ -454,7 +452,7 @@ def create_optimized_shorts(singer, song, melon_url, content_html, yt_direct_url
     card_path = "card_frame.png"
     card_with_border.save(card_path, "PNG")
 
-    print(f"   [4/4] MP4 모션 비디오 렌더링 인코딩 중 ({duration}초, Ken Burns 줌인 + 엔딩 구독 전환 적용)...")
+    print(f"   [4/4] MP4 모션 비디오 렌더링 인코딩 중 ({duration}초, Ken Burns 줌인 적용)...")
     bg_clip = safe_duration(ImageClip(bg_path), duration)
 
     raw_card_clip = safe_duration(ImageClip(card_path), duration)
@@ -472,8 +470,8 @@ def create_optimized_shorts(singer, song, melon_url, content_html, yt_direct_url
 
     layers = [bg_clip, zoomed_card_clip]
     ending_clip = None
-    if duration > 6.0:
-        ending_dur = 3.5
+    if duration > 7.5:
+        ending_dur = 2.5
         ending_start = round(duration - ending_dur, 2)
         ending_clip = safe_duration(ImageClip(ending_path), ending_dur)
         ending_clip = safe_start(ending_clip, ending_start)
