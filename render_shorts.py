@@ -84,7 +84,7 @@ if not WEBHOOK_URL:
 SPREADSHEET_NAME = "Copy of 블로그 자동화 관리 시트"
 spreadsheet = gc.open(SPREADSHEET_NAME)
 
-# ================= [VERIFIED: 3중 백업 고화질 앨범 자켓 확보 엔진] =================
+# ================= [LOCKED: 3중 백업 고화질 앨범 자켓 확보 엔진] =================
 def get_best_album_art(singer, song, melon_song_url, content_html):
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
@@ -147,14 +147,70 @@ def get_best_album_art(singer, song, melon_song_url, content_html):
 
     return None
 
+# ================= [NEW: 시트 G열 본문에서 앨범 임팩트 한 줄 소개 자동 추출기] =================
+def build_impact_narration(singer, song, content_html, is_popular=False):
+    default_intro = (
+        f"시청자 여러분이 사랑하는 트로트 명곡! 가수 {singer}의 {song}입니다."
+        if is_popular else
+        f"오늘 전해드릴 명품 트로트 신곡! 가수 {singer}의 {song}입니다."
+    )
+    cta_outro = "매일 새로운 트로트 명곡 소식을 받으시려면 지금 구독을 눌러주세요."
+
+    if not content_html or not isinstance(content_html, str):
+        return f"{default_intro} {cta_outro}"
+
+    cleaned = re.sub(r'<(style|script)[^>]*>.*?</\1>', ' ', content_html, flags=re.DOTALL | re.IGNORECASE)
+    cleaned = re.sub(r'<br\s*/?>|</p>|</div>|</li>|</h[1-6]>', '\n', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'<[^>]+>', ' ', cleaned)
+    for ent, ch in [(" ", " "), ("&", "&"), (""", '"'), ("<", "<"), (">", ">"), ("'", "'")]:
+        cleaned = cleaned.replace(ent, ch)
+
+    lines = [re.sub(r'\s+', ' ', line).strip() for line in cleaned.splitlines()]
+    ignore_words = [
+        "작사", "작곡", "편곡", "발매일", "앨범명", "가사", "듣기", "티스토리",
+        "목차", "프로필", "크레딧", "클릭", "바로가기", "출처", "유튜브", "멜론",
+        "추천곡", "모음", "http", "www.", "copyright", "무단전재"
+    ]
+
+    best_sentence = ""
+    for line in lines:
+        if not line or " : " in line or line.startswith(("#", "-", "•", "▶", "※", "[")):
+            continue
+        for sent in re.split(r'(?<=[.!?])\s+', line):
+            s = sent.strip()
+            if 18 <= len(s) <= 72 and not any(w in s.lower() for w in ignore_words):
+                if s.endswith(("다.", "요.", "니다.", "세요.", "죠.", "네요.")):
+                    best_sentence = s
+                    break
+                elif not best_sentence:
+                    best_sentence = s
+        if best_sentence and best_sentence.endswith(("다.", "요.", "니다.", "세요.")):
+            break
+
+    if best_sentence:
+        if not best_sentence.endswith((".", "!", "?")):
+            best_sentence += "."
+        return f"가수 {singer}의 {song}! {best_sentence} {cta_outro}"
+
+    return f"{default_intro} {cta_outro}"
+
+# ================= [NEW: 자연스러운 라디오 DJ 톤 TTS 음성 엔진] =================
 async def _async_generate_voice(text, filename="voice.mp3"):
-    communicate = edge_tts.Communicate(text, "ko-KR-SunHiNeural", rate="+8%")
+    # 차분하고 따뜻한 성우 톤(HyunSuNeural) 우선 적용, 실패 시 SunHiNeural 자연 톤 폴백
+    try:
+        communicate = edge_tts.Communicate(text, "ko-KR-HyunSuNeural", rate="+2%", pitch="-2Hz")
+        await communicate.save(filename)
+        if os.path.exists(filename) and os.path.getsize(filename) > 1000:
+            return
+    except Exception:
+        pass
+    communicate = edge_tts.Communicate(text, "ko-KR-SunHiNeural", rate="+2%", pitch="-3Hz")
     await communicate.save(filename)
 
 def generate_voice_sync(text, filename="voice.mp3"):
     asyncio.run(_async_generate_voice(text, filename))
 
-# ================= [VERIFIED: 보조 계정 YT_COOKIES 연동 원곡 하이라이트 음원 추출기] =================
+# ================= [LOCKED: 2중 음원 추출 + CRLF 쿠키 정규화 안전장치] =================
 def fetch_song_highlight_audio(singer, song, out_filename="bgm_raw.m4a"):
     if os.path.exists(out_filename):
         os.remove(out_filename)
@@ -163,36 +219,59 @@ def fetch_song_highlight_audio(singer, song, out_filename="bgm_raw.m4a"):
     yt_cookies_env = os.environ.get("YT_COOKIES", "").strip()
     has_cookie = False
 
-    if yt_cookies_env:
+    if yt_cookies_env and ("youtube.com" in yt_cookies_env or "google.com" in yt_cookies_env):
         try:
-            with open(cookie_path, "w", encoding="utf-8") as cf:
-                cf.write(yt_cookies_env + "\n")
-            if os.path.exists(cookie_path) and os.path.getsize(cookie_path) > 50:
+            normalized_lines = [line.rstrip("\r") for line in yt_cookies_env.splitlines()]
+            with open(cookie_path, "w", encoding="utf-8", newline="\n") as cf:
+                cf.write("\n".join(normalized_lines) + "\n")
+            if os.path.exists(cookie_path) and os.path.getsize(cookie_path) > 100:
                 has_cookie = True
         except Exception as ce:
             print(f"      [안내] 쿠키 파일 기록 건너뜀: {ce}")
 
     query = f"ytsearch1:{singer} {song} 가사 audio"
-    ydl_opts = {
-        "format": "bestaudio[ext=m4a]/bestaudio/best",
-        "outtmpl": out_filename,
-        "quiet": True,
-        "no_warnings": True,
-        "noplaylist": True,
-        "socket_timeout": 15,
-        "extractor_args": {"youtube": {"player_client": ["web", "android"]}},
-    }
+
+    strategies = []
     if has_cookie:
-        ydl_opts["cookiefile"] = cookie_path
-        print("      └ 보조 계정 쿠키(YT_COOKIES) 인증 적용됨")
+        strategies.append({
+            "label": "1차: 보조 계정 쿠키(YT_COOKIES) + tv_embedded/mweb",
+            "opts": {
+                "format": "bestaudio[ext=m4a]/bestaudio/best",
+                "outtmpl": out_filename,
+                "quiet": True,
+                "no_warnings": True,
+                "noplaylist": True,
+                "socket_timeout": 15,
+                "cookiefile": cookie_path,
+                "extractor_args": {"youtube": {"player_client": ["tv_embedded", "mweb", "web"]}},
+            }
+        })
+    strategies.append({
+        "label": "2차: 모바일 클라이언트(ios/android) 무쿠키 우회",
+        "opts": {
+            "format": "bestaudio[ext=m4a]/bestaudio/best",
+            "outtmpl": out_filename,
+            "quiet": True,
+            "no_warnings": True,
+            "noplaylist": True,
+            "socket_timeout": 15,
+            "extractor_args": {"youtube": {"player_client": ["ios", "android", "tv_embedded"]}},
+        }
+    })
 
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.extract_info(query, download=True)
-            if os.path.exists(out_filename) and os.path.getsize(out_filename) > 10000:
-                return out_filename
-    except Exception as e:
-        print(f"      [안내] 신곡 배경음 추출 건너뜀 (나레이션 단독 모드 안전 전환): {e}")
+        for st in strategies:
+            if os.path.exists(out_filename):
+                os.remove(out_filename)
+            try:
+                print(f"      └ 음원 추출 시도: {st['label']}")
+                with yt_dlp.YoutubeDL(st["opts"]) as ydl:
+                    ydl.extract_info(query, download=True)
+                    if os.path.exists(out_filename) and os.path.getsize(out_filename) > 10000:
+                        print(f"      └ 음원 추출 성공! ({st['label']})")
+                        return out_filename
+            except Exception as e:
+                print(f"      [안내] {st['label']} 건너뜀 -> 다음 방식 시도 ({str(e)[:80]})")
     finally:
         if os.path.exists(cookie_path):
             try:
@@ -215,14 +294,14 @@ def get_font_safe(size):
                 pass
     return ImageFont.load_default()
 
-# ================= [VERIFIED: 3중 자켓 백업 + Ken Burns 줌인 + 인기곡/최신곡 분기 쇼츠 엔진] =================
+# ================= [UPDATED: 앨범 임팩트 멘트 + 자연 음성 + 25초 하이라이트 쇼츠 엔진] =================
 def create_optimized_shorts(singer, song, melon_url, content_html, tab_name="최신곡", output_path="shorts.mp4"):
     is_popular = (tab_name == "인기곡")
     badge_text = "시청자 추천 트로트 명곡" if is_popular else "오늘의 명품 트로트 신곡"
-    intro_prefix = "트로트 명곡 추천" if is_popular else "명품 트로트 신곡"
 
-    print(f"   [1/4] Edge-TTS AI 아나운서 음성 생성 중 ({tab_name} 모드)...")
-    script_text = f"{intro_prefix}, 가수 {singer}의 {song}! 매일 명곡 소식을 받으시려면 구독을 눌러주세요."
+    print(f"   [1/4] 자연스러운 성우 톤 & 앨범 임팩트 소개 음성 생성 중 ({tab_name} 모드)...")
+    script_text = build_impact_narration(singer, song, content_html, is_popular)
+    print(f"      └ 생성된 멘트: {script_text}")
     audio_path = "voice.mp3"
     generate_voice_sync(script_text, audio_path)
 
@@ -238,7 +317,11 @@ def create_optimized_shorts(singer, song, melon_url, content_html, tab_name="최
         try:
             bgm_clip_full = AudioFileClip(bgm_raw_path)
             raw_bgm_dur = float(bgm_clip_full.duration)
-            target_total = max(voice_dur + 11.5, 16.0)
+            if raw_bgm_dur <= voice_dur + 1.5:
+                raise ValueError(f"추출된 음원 길이가 너무 짧음 ({raw_bgm_dur:.1f}초)")
+
+            # 멘트 종료 후에도 가수 원곡 하이라이트를 약 18초 이상 감상하도록 총 25~26초 구성
+            target_total = max(voice_dur + 18.0, 25.0)
 
             if raw_bgm_dur > target_total + 45:
                 start_sec = 45.0
@@ -247,12 +330,12 @@ def create_optimized_shorts(singer, song, melon_url, content_html, tab_name="최
             else:
                 start_sec = 0.0
 
-            end_sec = round(min(start_sec + target_total, raw_bgm_dur - 0.1), 2)
+            end_sec = round(min(start_sec + target_total, raw_bgm_dur - 0.15), 2)
             bgm_sub = safe_subclip(bgm_clip_full, start_sec, end_sec)
             duration = round(end_sec - start_sec, 2)
 
             if duration > voice_dur + 1.0:
-                bgm_part1 = safe_volumex(safe_subclip(bgm_sub, 0, voice_dur), 0.22)
+                bgm_part1 = safe_volumex(safe_subclip(bgm_sub, 0, voice_dur), 0.20)
                 bgm_part2 = safe_volumex(safe_subclip(bgm_sub, voice_dur, duration), 1.00)
                 bgm_ducked = concatenate_audioclips([bgm_part1, bgm_part2])
             else:
@@ -263,7 +346,7 @@ def create_optimized_shorts(singer, song, melon_url, content_html, tab_name="최
             final_audio = safe_duration(final_audio, duration)
             print(f"      └ 오디오 믹싱 성공! (총 {duration:.1f}초: 멘트 {voice_dur:.1f}초 + 하이라이트 {duration - voice_dur:.1f}초)")
         except Exception as mix_err:
-            print(f"      [안내] 오디오 믹싱 예외 발생, 기본 음성으로 전환: {mix_err}")
+            print(f"      [안내] 오디오 믹싱 예외 발생, 기본 음성으로 안전 전환: {mix_err}")
             duration = voice_dur
             final_audio = CompositeAudioClip([safe_start(voice_clip, 0)])
             final_audio = safe_duration(final_audio, duration)
@@ -277,7 +360,6 @@ def create_optimized_shorts(singer, song, melon_url, content_html, tab_name="최
     jacket_img = get_best_album_art(singer, song, melon_url, content_html)
 
     if jacket_img is None:
-        # 최종 폴백: 골드 LP 레코드 스타일 타이포 카드
         jacket_img = Image.new("RGB", (720, 720), color=(24, 30, 52))
         d_temp = ImageDraw.Draw(jacket_img)
         d_temp.ellipse([40, 40, 680, 680], outline=(255, 215, 0), width=6)
@@ -289,7 +371,6 @@ def create_optimized_shorts(singer, song, melon_url, content_html, tab_name="최
 
     jacket_img = ImageOps.fit(jacket_img, (720, 720), Image.Resampling.LANCZOS)
 
-    # 1) 배경 레이어 (블러 + 다크 오버레이 + 상/하단 타이포그래피)
     bg_img = jacket_img.resize((1080, 1920), Image.Resampling.BICUBIC).filter(ImageFilter.GaussianBlur(radius=45))
     overlay = Image.new("RGBA", (1080, 1920), (0, 0, 0, 145))
     bg_img = Image.alpha_composite(bg_img.convert("RGBA"), overlay).convert("RGB")
@@ -309,7 +390,6 @@ def create_optimized_shorts(singer, song, melon_url, content_html, tab_name="최
     draw.text((540, 345), display_song, font=f_bold, fill=(255, 255, 255), anchor="mm")
     draw.text((540, 1255), f"가수 : {singer}", font=f_singer, fill=(255, 215, 0), anchor="mm")
 
-    # 하단 구독 유도 + 블로그 링크 이중 배너
     draw.rounded_rectangle([(70, 1525), (1010, 1720)], radius=24, fill=(215, 38, 56))
     draw.text((540, 1585), "▶ 매일 트로트 명곡 알림 → 오른쪽 [구독] 꾹!", font=f_cta_main, fill=(255, 235, 59), anchor="mm")
     draw.text((540, 1660), "◀◀ 전곡·가사는 왼쪽 아래 [채널 사진] 누르고 상단 링크!", font=f_cta_sub, fill=(255, 255, 255), anchor="mm")
@@ -317,7 +397,6 @@ def create_optimized_shorts(singer, song, melon_url, content_html, tab_name="최
     bg_path = "bg_frame.png"
     bg_img.save(bg_path, "PNG")
 
-    # 2) 중앙 자켓 카드 레이어 (정중앙 좌표 고정 후 1.00 -> 1.08 줌인)
     card_with_border = Image.new("RGB", (736, 736), (255, 255, 255))
     card_with_border.paste(jacket_img, (8, 8))
     card_path = "card_frame.png"
@@ -347,6 +426,8 @@ def create_optimized_shorts(singer, song, melon_url, content_html, tab_name="최
         output_path,
         codec="libx264",
         audio_codec="aac",
+        preset="ultrafast",
+        threads=2,
         ffmpeg_params=["-pix_fmt", "yuv420p", "-movflags", "+faststart"],
         logger=None
     )
@@ -367,8 +448,13 @@ def create_optimized_shorts(singer, song, melon_url, content_html, tab_name="최
 
     return output_path
 
-# ================= [LOCKED: Apps Script 웹훅 업로드] =================
+# ================= [LOCKED: Apps Script 웹훅 업로드 + 용량 가드] =================
 def upload_via_apps_script(file_path, file_name, row_num, new_id, sheet_name="최신곡"):
+    file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+    print(f"   [용량 검증] 생성된 MP4 크기: {file_size_mb:.2f} MB")
+    if file_size_mb > 30.0:
+        raise RuntimeError(f"Apps Script 웹훅 페이로드 한도 초과 위험 ({file_size_mb:.2f} MB > 30 MB)")
+
     with open(file_path, "rb") as f:
         b64_data = base64.b64encode(f.read()).decode("utf-8")
 
@@ -389,13 +475,12 @@ def upload_via_apps_script(file_path, file_name, row_num, new_id, sheet_name="�
         raise RuntimeError(f"Apps Script 내부 처리 오류: {result.get('message') or result.get('error')}")
     return result.get("fileId")
 
-# ================= [VERIFIED: 저녁 20:30 '인기곡' 교차 발행 + 중복 곡 방지 실행 제어] =================
+# ================= [LOCKED: 저녁 20:30 '인기곡' 교차 발행 + 중복 곡 방지 실행 제어] =================
 def run_pipeline():
     kst = timezone(timedelta(hours=9))
     now_kst = datetime.now(kst)
     prefix = now_kst.strftime("%m%d")
 
-    # 한국 시간(KST) 저녁 황금시간대(19:00~22:59)에는 '인기곡' 탭 우선 탐색, 대기곡 없으면 '최신곡' 자동 폴백
     if 19 <= now_kst.hour <= 22:
         tab_priority = ["인기곡", "최신곡"]
     else:
@@ -423,7 +508,6 @@ def run_pipeline():
                     current_numbers.append(num)
                 except Exception:
                     pass
-            # 이미 쇼츠 ID가 발급된 (가수, 곡명) 쌍 수집하여 중복 발행 방지
             s_name = r[2].strip() if len(r) > 2 else ""
             t_name = r[3].strip() if len(r) > 3 else ""
             s_id = r[15].strip() if len(r) > 15 else ""
