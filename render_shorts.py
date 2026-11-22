@@ -145,20 +145,52 @@ def get_best_album_art(singer, song, melon_song_url, content_html):
 
     return None
 
-# ================= [LOCKED: 블로그 인사말 제외 + 순수 곡 임팩트 문장 추출] =================
-def _fix_eun_neun_particle(text):
-    """받침 유무에 맞춰 '곡명+은/는' 오탈자를 자연스럽게 보정합니다."""
-    def _repl(m):
-        word = m.group(1)
-        last_ch = word[-1]
-        code = ord(last_ch)
-        if 0xAC00 <= code <= 0xD7A3:
-            has_jongseong = ((code - 0xAC00) % 28) != 0
-            return word + ("은" if has_jongseong else "는")
-        return m.group(0)
-    return re.sub(r"([가-힣]{2,15})(?:은|는)(?=\s+가수|\s+원곡|\s+노래)", _repl, text)
+# ================= [UPGRADED: 사람처럼 자연스러운 구어체·DJ 호흡 나레이션 엔진] =================
+def _has_jongseong(word):
+    if not word:
+        return False
+    ch = word.strip()[-1]
+    code = ord(ch)
+    if 0xAC00 <= code <= 0xD7A3:
+        return ((code - 0xAC00) % 28) != 0
+    return False
 
-def extract_impact_sentence(content_html):
+def _josa(word, pair):
+    return word + (pair[0] if _has_jongseong(word) else pair[1])
+
+def _fix_natural_particles(text):
+    def _repl(m):
+        w = m.group(1)
+        p = m.group(2)
+        if not _has_jongseong(w):
+            if p == "은":
+                return w + "는"
+            if p == "이":
+                return w + "가"
+            if p == "을":
+                return w + "를"
+        else:
+            if p == "는":
+                return w + "은"
+            if p == "가":
+                return w + "이"
+            if p == "를":
+                return w + "을"
+        return m.group(0)
+
+    cleaned = re.sub(r"([가-힣]{1,16})(은|는|이|가|을|를)(?=\s)", _repl, text)
+    replacements = [
+        ("전면 배치한 공식 발매 음원입니다.", "마음 깊이 스며드는 노래예요."),
+        ("감상해 보시기 바랍니다.", "편안하게 감상해 보세요."),
+        ("눌러주시기 바랍니다.", "눌러주세요."),
+        ("확인하시기 바랍니다.", "확인해 보세요."),
+        ("지금 구독을 눌러주세요.", "구독 한 번 꾹 눌러주세요.")
+    ]
+    for old_s, new_s in replacements:
+        cleaned = cleaned.replace(old_s, new_s)
+    return cleaned
+
+def extract_impact_sentence(content_html, song=""):
     if not content_html or not isinstance(content_html, str):
         return ""
 
@@ -172,7 +204,8 @@ def extract_impact_sentence(content_html):
         "작사", "작곡", "편곡", "발매일", "앨범명", "가사", "듣기", "티스토리",
         "목차", "프로필", "크레딧", "클릭", "바로가기", "출처", "유튜브", "멜론",
         "추천곡", "모음", "http", "www.", "copyright", "무단전재",
-        "공감", "마음에 드셨다면", "하단", "댓글", "좋아요", "이웃추가", "구독하기", "감사합니다"
+        "공감", "마음에 드셨다면", "하단", "댓글", "좋아요", "이웃추가", "구독하기", "감사합니다",
+        "전면 배치", "공식 발매"
     ]
 
     best_sentence = ""
@@ -180,14 +213,14 @@ def extract_impact_sentence(content_html):
         if not line or " : " in line or line.startswith(("#", "-", "•", "▶", "※", "[")):
             continue
         for sent in re.split(r'(?<=[.!?])\s+', line):
-            s = _fix_eun_neun_particle(sent.strip())
-            if 18 <= len(s) <= 68 and not any(w in s.lower() for w in ignore_words):
-                if s.endswith(("다.", "요.", "니다.", "세요.", "죠.", "네요.")):
+            s = _fix_natural_particles(sent.strip())
+            if 16 <= len(s) <= 58 and not any(w in s.lower() for w in ignore_words):
+                if s.endswith(("요.", "죠.", "네요.", "다.")):
                     best_sentence = s
                     break
                 elif not best_sentence:
                     best_sentence = s
-        if best_sentence and best_sentence.endswith(("다.", "요.", "니다.", "세요.")):
+        if best_sentence and best_sentence.endswith(("요.", "죠.", "네요.")):
             break
 
     if best_sentence and not best_sentence.endswith((".", "!", "?")):
@@ -195,40 +228,40 @@ def extract_impact_sentence(content_html):
     return best_sentence
 
 def build_impact_narration(singer, song, content_html, is_popular=False):
-    default_intro = (
-        f"시청자 여러분이 사랑하는 트로트 명곡! 가수 {singer}의 {song}입니다."
-        if is_popular else
-        f"오늘 전해드릴 명품 트로트 신곡! 가수 {singer}의 {song}입니다."
-    )
-    cta_outro = "매일 새로운 트로트 명곡 소식을 받으시려면 지금 구독을 눌러주세요."
-    impact = extract_impact_sentence(content_html)
-    if impact:
-        return f"가수 {singer}의 {song}! {impact} {cta_outro}", impact
-    return f"{default_intro} {cta_outro}", ""
+    clean_singer = re.sub(r"\s*[\(\[\{][^\)\]\}]*[\)\]\}]\s*", " ", str(singer or "")).strip() or str(singer or "").strip()
+    clean_song = re.sub(r"\s*[\(\[\{][^\)\]\}]*[\)\]\}]\s*", " ", str(song or "")).strip() or str(song or "").strip()
 
-# ================= [LOCKED: 자연스러운 라디오 DJ 톤 TTS 음성 엔진] =================
+    if is_popular:
+        intro = f"오늘도 많은 분들이 찾아주신 명곡이죠. {clean_singer} 님의, {_josa(clean_song, ('은', '는'))} 참 정겹습니다."
+    else:
+        intro = f"귀에 쏙 들어오는 반가운 트로트 노래, {clean_singer} 님이 부른 {_josa(clean_song, ('을', '를'))} 들려드릴게요."
+
+    impact = extract_impact_sentence(content_html, clean_song)
+    outro = "매일 기분 좋은 트로트 소식, 구독 한 번 꾹 눌러주세요."
+
+    if impact:
+        full_text = f"{intro} {impact} {outro}"
+    else:
+        full_text = f"{intro} {outro}"
+
+    return _fix_natural_particles(full_text), impact
+
+# ================= [UPGRADED: 기계음 줄인 자연스러운 사람 호흡 TTS 엔진] =================
 async def _async_generate_voice(text, filename="voice.mp3"):
     try:
-        communicate = edge_tts.Communicate(text, "ko-KR-HyunSuNeural", rate="+2%", pitch="-2Hz")
+        communicate = edge_tts.Communicate(text, "ko-KR-HyunSuNeural", rate="-2%", pitch="-4Hz")
         await communicate.save(filename)
         if os.path.exists(filename) and os.path.getsize(filename) > 1000:
             return
     except Exception:
         pass
-    communicate = edge_tts.Communicate(text, "ko-KR-SunHiNeural", rate="+2%", pitch="-3Hz")
+    communicate = edge_tts.Communicate(text, "ko-KR-InJoonNeural", rate="-2%", pitch="-3Hz")
     await communicate.save(filename)
 
 def generate_voice_sync(text, filename="voice.mp3"):
     asyncio.run(_async_generate_voice(text, filename))
 
-# ================= [UPGRADED: PO Token 서버 + 무쿠키/쿠키 안전 음원 추출] =================
-def _is_pot_server_alive():
-    try:
-        r = requests.get("http://127.0.0.1:4416/ping", timeout=1.5)
-        return r.status_code == 200
-    except Exception:
-        return False
-
+# ================= [LOCKED: 단일 패스 안전 음원 추출] =================
 def fetch_song_highlight_audio(singer, song, yt_direct_url="", out_filename="bgm_raw.m4a"):
     for f in os.listdir("."):
         if f.startswith("bgm_raw."):
@@ -257,49 +290,28 @@ def fetch_song_highlight_audio(singer, song, yt_direct_url="", out_filename="bgm
     else:
         target = f"ytsearch1:{singer} {song} 가사 audio"
 
-    pot_active = _is_pot_server_alive()
-    attempts = []
-    if pot_active:
-        attempts.append(("PO Token + mweb(무쿠키)", {
-            "extractor_args": {
-                "youtube": {
-                    "player_client": ["mweb"],
-                    "po_token": ["mweb.gvs+http://127.0.0.1:4416"]
-                }
-            }
-        }))
-    if has_cookie:
-        attempts.append(("쿠키 폴백", {"cookiefile": cookie_path}))
-    attempts.append(("기본 클라이언트 폴백", {}))
-
     try:
-        for label, extra in attempts:
-            for f in os.listdir("."):
-                if f.startswith("bgm_raw."):
-                    try:
-                        os.remove(f)
-                    except Exception:
-                        pass
-            opts = {
-                "format": "bestaudio/best",
-                "outtmpl": "bgm_raw.%(ext)s",
-                "quiet": True,
-                "no_warnings": True,
-                "noprogress": True,
-                "noplaylist": True,
-                "socket_timeout": 12,
-                "retries": 0,
-            }
-            opts.update(extra)
-            try:
-                with yt_dlp.YoutubeDL(opts) as ydl:
-                    ydl.extract_info(target, download=True)
-                files = [f for f in os.listdir(".") if f.startswith("bgm_raw.") and os.path.isfile(f) and os.path.getsize(f) > 10000]
-                if files:
-                    print(f"      └ 음원 추출 성공 ({label})")
-                    return files[0]
-            except Exception:
-                continue
+        opts = {
+            "format": "bestaudio/best",
+            "outtmpl": "bgm_raw.%(ext)s",
+            "quiet": True,
+            "no_warnings": True,
+            "noprogress": True,
+            "noplaylist": True,
+            "socket_timeout": 12,
+            "retries": 0,
+        }
+        if has_cookie:
+            opts["cookiefile"] = cookie_path
+
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            ydl.extract_info(target, download=True)
+
+        files = [f for f in os.listdir(".") if f.startswith("bgm_raw.") and os.path.isfile(f) and os.path.getsize(f) > 10000]
+        if files:
+            return files[0]
+        return None
+    except Exception:
         return None
     finally:
         if os.path.exists(cookie_path):
