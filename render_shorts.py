@@ -146,6 +146,18 @@ def get_best_album_art(singer, song, melon_song_url, content_html):
     return None
 
 # ================= [LOCKED: 블로그 인사말 제외 + 순수 곡 임팩트 문장 추출] =================
+def _fix_eun_neun_particle(text):
+    """받침 유무에 맞춰 '곡명+은/는' 오탈자를 자연스럽게 보정합니다."""
+    def _repl(m):
+        word = m.group(1)
+        last_ch = word[-1]
+        code = ord(last_ch)
+        if 0xAC00 <= code <= 0xD7A3:
+            has_jongseong = ((code - 0xAC00) % 28) != 0
+            return word + ("은" if has_jongseong else "는")
+        return m.group(0)
+    return re.sub(r"([가-힣]{2,15})(?:은|는)(?=\s+가수|\s+원곡|\s+노래)", _repl, text)
+
 def extract_impact_sentence(content_html):
     if not content_html or not isinstance(content_html, str):
         return ""
@@ -168,7 +180,7 @@ def extract_impact_sentence(content_html):
         if not line or " : " in line or line.startswith(("#", "-", "•", "▶", "※", "[")):
             continue
         for sent in re.split(r'(?<=[.!?])\s+', line):
-            s = sent.strip()
+            s = _fix_eun_neun_particle(sent.strip())
             if 18 <= len(s) <= 68 and not any(w in s.lower() for w in ignore_words):
                 if s.endswith(("다.", "요.", "니다.", "세요.", "죠.", "네요.")):
                     best_sentence = s
@@ -209,7 +221,14 @@ async def _async_generate_voice(text, filename="voice.mp3"):
 def generate_voice_sync(text, filename="voice.mp3"):
     asyncio.run(_async_generate_voice(text, filename))
 
-# ================= [LOCKED: 단일 패스 안전 음원 추출] =================
+# ================= [UPGRADED: PO Token 서버 + 무쿠키/쿠키 안전 음원 추출] =================
+def _is_pot_server_alive():
+    try:
+        r = requests.get("http://127.0.0.1:4416/ping", timeout=1.5)
+        return r.status_code == 200
+    except Exception:
+        return False
+
 def fetch_song_highlight_audio(singer, song, yt_direct_url="", out_filename="bgm_raw.m4a"):
     for f in os.listdir("."):
         if f.startswith("bgm_raw."):
@@ -238,28 +257,49 @@ def fetch_song_highlight_audio(singer, song, yt_direct_url="", out_filename="bgm
     else:
         target = f"ytsearch1:{singer} {song} 가사 audio"
 
+    pot_active = _is_pot_server_alive()
+    attempts = []
+    if pot_active:
+        attempts.append(("PO Token + mweb(무쿠키)", {
+            "extractor_args": {
+                "youtube": {
+                    "player_client": ["mweb"],
+                    "po_token": ["mweb.gvs+http://127.0.0.1:4416"]
+                }
+            }
+        }))
+    if has_cookie:
+        attempts.append(("쿠키 폴백", {"cookiefile": cookie_path}))
+    attempts.append(("기본 클라이언트 폴백", {}))
+
     try:
-        opts = {
-            "format": "bestaudio/best",
-            "outtmpl": "bgm_raw.%(ext)s",
-            "quiet": True,
-            "no_warnings": True,
-            "noprogress": True,
-            "noplaylist": True,
-            "socket_timeout": 12,
-            "retries": 0,
-        }
-        if has_cookie:
-            opts["cookiefile"] = cookie_path
-
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            ydl.extract_info(target, download=True)
-
-        files = [f for f in os.listdir(".") if f.startswith("bgm_raw.") and os.path.isfile(f) and os.path.getsize(f) > 10000]
-        if files:
-            return files[0]
-        return None
-    except Exception:
+        for label, extra in attempts:
+            for f in os.listdir("."):
+                if f.startswith("bgm_raw."):
+                    try:
+                        os.remove(f)
+                    except Exception:
+                        pass
+            opts = {
+                "format": "bestaudio/best",
+                "outtmpl": "bgm_raw.%(ext)s",
+                "quiet": True,
+                "no_warnings": True,
+                "noprogress": True,
+                "noplaylist": True,
+                "socket_timeout": 12,
+                "retries": 0,
+            }
+            opts.update(extra)
+            try:
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    ydl.extract_info(target, download=True)
+                files = [f for f in os.listdir(".") if f.startswith("bgm_raw.") and os.path.isfile(f) and os.path.getsize(f) > 10000]
+                if files:
+                    print(f"      └ 음원 추출 성공 ({label})")
+                    return files[0]
+            except Exception:
+                continue
         return None
     finally:
         if os.path.exists(cookie_path):
