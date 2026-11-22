@@ -29,11 +29,26 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y fonts-nanum ffmpeg
           python -m pip install --upgrade pip
-          pip install edge-tts moviepy pillow requests beautifulsoup4 gspread google-auth yt-dlp
+          pip install edge-tts moviepy pillow requests beautifulsoup4 gspread google-auth yt-dlp bgutil-ytdlp-pot-provider
+
+      - name: Deno 런타임 설치 및 PO Token 서버 백그라운드 실행
+        run: |
+          curl -fsSL https://deno.land/install.sh | sh
+          export DENO_INSTALL="$HOME/.deno"
+          export PATH="$DENO_INSTALL/bin:$PATH"
+          git clone --depth 1 --branch 1.2.2 https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git /tmp/bgutil-pot || true
+          if [ -d "/tmp/bgutil-pot/server" ]; then
+            cd /tmp/bgutil-pot/server
+            deno task build || true
+            nohup deno run --allow-net --allow-read --allow-env src/main.ts --port 4416 >/tmp/pot_server.log 2>&1 &
+            sleep 3
+          fi
 
       - name: 쇼츠 무인 자동 생성 및 구글 드라이브 업로드 실행
         env:
           GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
           APPS_SCRIPT_WEBHOOK: ${{ secrets.APPS_SCRIPT_WEBHOOK }}
           YT_COOKIES: ${{ secrets.YT_COOKIES }}
-        run: python render_shorts.py
+        run: |
+          export PATH="$HOME/.deno/bin:$PATH"
+          python render_shorts.py
